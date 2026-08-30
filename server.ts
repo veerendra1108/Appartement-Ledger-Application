@@ -6,10 +6,68 @@ import ExcelJS from "exceljs";
 
 const app = express();
 const PORT = 3000;
-const EXCEL_PATH = "maintenance_data.xlsx";
 const START_MONTH = "2025-06";
 
+function getResolvedExcelPath(): string {
+  const candidates = [
+    path.resolve(process.cwd(), "maintenance_data.xlsx"),
+    path.resolve(process.cwd(), "maintenance_data.xls"),
+    path.resolve(process.cwd(), "apartment_ledger.xlsx"),
+    path.resolve(process.cwd(), "Apartment_Ledger.xlsx"),
+    path.resolve(process.cwd(), "maintenance.xlsx")
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  try {
+    const files = fs.readdirSync(process.cwd());
+    const xlsx = files.find(f => (f.endsWith(".xlsx") || f.endsWith(".xls")) && !f.startsWith("~$"));
+    if (xlsx) return path.resolve(process.cwd(), xlsx);
+  } catch (e) {}
+  return path.resolve(process.cwd(), "maintenance_data.xlsx");
+}
+
+let EXCEL_PATH = getResolvedExcelPath();
+
 app.use(express.json({ limit: "10mb" }));
+
+const DEFAULT_SCHEMAS: Record<string, { header: string; key: string }[]> = {
+  Flats: [
+    { header: "id", key: "id" },
+    { header: "flat_number", key: "flat_number" },
+    { header: "owner_name", key: "owner_name" },
+    { header: "maintenance_amount", key: "maintenance_amount" },
+    { header: "notes", key: "notes" }
+  ],
+  Payments: [
+    { header: "id", key: "id" },
+    { header: "flat_id", key: "flat_id" },
+    { header: "flat_number", key: "flat_number" },
+    { header: "owner_name", key: "owner_name" },
+    { header: "month", key: "month" },
+    { header: "amount_expected", key: "amount_expected" },
+    { header: "amount_received", key: "amount_received" },
+    { header: "status", key: "status" },
+    { header: "date_received", key: "date_received" },
+    { header: "is_arrears", key: "is_arrears" },
+    { header: "payment_mode", key: "payment_mode" },
+    { header: "remarks", key: "remarks" }
+  ],
+  Expenses: [
+    { header: "id", key: "id" },
+    { header: "date", key: "date" },
+    { header: "category", key: "category" },
+    { header: "description", key: "description" },
+    { header: "amount", key: "amount" },
+    { header: "vendor", key: "vendor" },
+    { header: "payment_mode", key: "payment_mode" },
+    { header: "notes", key: "notes" }
+  ],
+  Settings: [
+    { header: "key", key: "key" },
+    { header: "value", key: "value" }
+  ]
+};
 
 // Excel Database Helper
 class ExcelDB {
@@ -19,69 +77,73 @@ class ExcelDB {
     this.workbook = new ExcelJS.Workbook();
   }
 
+  getFilePath() {
+    return EXCEL_PATH;
+  }
+
+  findWorksheet(sheetName: string): ExcelJS.Worksheet | null {
+    let ws = this.workbook.getWorksheet(sheetName);
+    if (ws) return ws;
+    const lower = sheetName.toLowerCase();
+    for (const worksheet of this.workbook.worksheets) {
+      if (worksheet.name.toLowerCase() === lower) {
+        return worksheet;
+      }
+    }
+    // Also try singular/plural
+    if (lower === "flats") {
+      for (const w of this.workbook.worksheets) {
+        if (w.name.toLowerCase().includes("flat")) return w;
+      }
+    }
+    if (lower === "payments") {
+      for (const w of this.workbook.worksheets) {
+        if (w.name.toLowerCase().includes("pay") || w.name.toLowerCase().includes("income") || w.name.toLowerCase().includes("collection")) return w;
+      }
+    }
+    if (lower === "expenses") {
+      for (const w of this.workbook.worksheets) {
+        if (w.name.toLowerCase().includes("exp")) return w;
+      }
+    }
+    if (lower === "settings") {
+      for (const w of this.workbook.worksheets) {
+        if (w.name.toLowerCase().includes("set") || w.name.toLowerCase().includes("config")) return w;
+      }
+    }
+    return null;
+  }
+
   async init() {
+    EXCEL_PATH = getResolvedExcelPath();
     const fileExists = fs.existsSync(EXCEL_PATH);
     if (fileExists) {
       try {
         await this.workbook.xlsx.readFile(EXCEL_PATH);
+        console.log(`Successfully loaded existing Excel file from: ${EXCEL_PATH}`);
       } catch (err) {
-        console.error("Error reading Excel file, might be corrupted or empty. Re-initializing...");
+        console.error("Error reading Excel file, re-initializing workbook:", err);
       }
     }
 
-    const sheets = [
-      { name: "Flats", columns: [
-        { header: "id", key: "id" },
-        { header: "flat_number", key: "flat_number" },
-        { header: "owner_name", key: "owner_name" },
-        { header: "maintenance_amount", key: "maintenance_amount" },
-        { header: "notes", key: "notes" }
-      ]},
-      { name: "Payments", columns: [
-        { header: "id", key: "id" },
-        { header: "flat_id", key: "flat_id" },
-        { header: "flat_number", key: "flat_number" },
-        { header: "owner_name", key: "owner_name" },
-        { header: "month", key: "month" },
-        { header: "amount_expected", key: "amount_expected" },
-        { header: "amount_received", key: "amount_received" },
-        { header: "status", key: "status" },
-        { header: "date_received", key: "date_received" },
-        { header: "is_arrears", key: "is_arrears" },
-        { header: "payment_mode", key: "payment_mode" },
-        { header: "remarks", key: "remarks" }
-      ]},
-      { name: "Expenses", columns: [
-        { header: "id", key: "id" },
-        { header: "date", key: "date" },
-        { header: "category", key: "category" },
-        { header: "description", key: "description" },
-        { header: "amount", key: "amount" },
-        { header: "vendor", key: "vendor" },
-        { header: "payment_mode", key: "payment_mode" },
-        { header: "notes", key: "notes" }
-      ]},
-      { name: "Settings", columns: [
-        { header: "key", key: "key" },
-        { header: "value", key: "value" }
-      ]}
-    ];
-
-    let sheetsCreated = false;
-    for (const s of sheets) {
-      if (!this.workbook.getWorksheet(s.name)) {
-        const ws = this.workbook.addWorksheet(s.name);
-        ws.columns = s.columns as any;
-        sheetsCreated = true;
+    // Ensure all standard sheets exist and have columns defined
+    for (const [sheetName, columns] of Object.entries(DEFAULT_SCHEMAS)) {
+      let ws = this.findWorksheet(sheetName);
+      if (!ws) {
+        ws = this.workbook.addWorksheet(sheetName);
+        ws.columns = columns as any;
+      } else {
+        // ExcelJS does not assign ws.columns when loading an existing file.
+        // We explicitly define columns so addRow/columns methods work safely.
+        ws.columns = columns as any;
       }
     }
 
     // Check if initial seeding is required
     const flats = this.getSheetData("Flats");
     if (!fileExists || flats.length === 0) {
-      // Seed default flats (e.g. 101-105, 201-205, etc.) with ₹2000 default maintenance
       if (this.getSheetData("Flats").length === 0) {
-        const flatsSheet = this.workbook.getWorksheet("Flats")!;
+        const flatsSheet = this.findWorksheet("Flats")!;
         const defaultFlats = [
           { id: 1, flat_number: "101", owner_name: "Ramesh Kumar", maintenance_amount: 2000, notes: "First Floor" },
           { id: 2, flat_number: "102", owner_name: "Suresh Sharma", maintenance_amount: 2000, notes: "First Floor" },
@@ -96,7 +158,7 @@ class ExcelDB {
       }
 
       // Ensure default settings
-      const settingsSheet = this.workbook.getWorksheet("Settings")!;
+      const settingsSheet = this.findWorksheet("Settings")!;
       const currentSettings = this.getSheetData("Settings");
       const defaults = [
         { key: "apartment_name", value: "Sri Sai Residency" },
@@ -124,7 +186,7 @@ class ExcelDB {
     try {
       const flats = this.getSheetData("Flats");
       const validFlatIds = new Set(flats.map(f => String(f.id)));
-      const paymentsSheet = this.workbook.getWorksheet("Payments");
+      const paymentsSheet = this.findWorksheet("Payments");
       if (!paymentsSheet) return;
 
       const allPayments = this.getSheetData("Payments");
@@ -144,7 +206,6 @@ class ExcelDB {
         if (uniqueMap.has(key)) {
           hasChanges = true;
           const prev = uniqueMap.get(key);
-          // Keep the one with received amount or latest
           if ((Number(p.amount_received) || 0) >= (Number(prev.amount_received) || 0)) {
             uniqueMap.set(key, p);
           }
@@ -168,12 +229,12 @@ class ExcelDB {
   }
 
   async deletePaymentsByFlatId(flatId: any) {
-    const sheet = this.workbook.getWorksheet("Payments");
+    const sheet = this.findWorksheet("Payments");
     if (!sheet) return;
     let modified = false;
     for (let i = sheet.rowCount; i >= 2; i--) {
       const row = sheet.getRow(i);
-      const cellFlatId = row.getCell(2).value; // flat_id column
+      const cellFlatId = row.getCell(2).value;
       if (String(cellFlatId) === String(flatId)) {
         sheet.spliceRows(i, 1);
         modified = true;
@@ -187,30 +248,92 @@ class ExcelDB {
       await this.workbook.xlsx.writeFile(EXCEL_PATH);
     } catch (err: any) {
       if (err.code === "EBUSY") {
-        console.error("Cannot write to Excel file because it is open in another program.");
+        console.error("Cannot write to Excel file because it is open in another program (e.g. MS Excel). Please close it.");
       }
       throw err;
     }
   }
 
-  getSheetData(sheetName: string) {
-    const sheet = this.workbook.getWorksheet(sheetName);
+  getSheetData(sheetName: string): any[] {
+    const sheet = this.findWorksheet(sheetName);
     if (!sheet) return [];
+
+    const schema = DEFAULT_SCHEMAS[sheetName] || [];
+    const headerMap: { colIndex: number; key: string }[] = [];
+    const headerRow = sheet.getRow(1);
+
+    if (headerRow && headerRow.cellCount > 0) {
+      headerRow.eachCell((cell, colNumber) => {
+        const raw = String(cell.value || "").trim();
+        if (!raw) return;
+        const norm = raw.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+        let matchedKey = schema.find(s => s.key === norm || s.header.toLowerCase() === norm)?.key;
+
+        if (!matchedKey) {
+          if (norm.includes("flat") && (norm.includes("no") || norm.includes("num"))) matchedKey = "flat_number";
+          else if (norm.includes("owner") || norm.includes("name")) matchedKey = "owner_name";
+          else if (norm.includes("maint") || norm.includes("expected")) matchedKey = (sheetName === "Flats" ? "maintenance_amount" : "amount_expected");
+          else if (norm.includes("received") || norm.includes("paid")) matchedKey = "amount_received";
+          else if (norm.includes("mode") || norm.includes("type")) matchedKey = "payment_mode";
+          else if (norm.includes("date")) matchedKey = (sheetName === "Payments" ? "date_received" : "date");
+          else if (norm.includes("desc")) matchedKey = "description";
+          else if (norm.includes("cat")) matchedKey = "category";
+          else if (norm.includes("vendor")) matchedKey = "vendor";
+          else if (norm.includes("rem") || norm.includes("note")) matchedKey = (sheetName === "Payments" ? "remarks" : "notes");
+          else matchedKey = norm;
+        }
+
+        headerMap.push({ colIndex: colNumber, key: matchedKey });
+      });
+    }
+
+    // If headers were not detected in row 1, map by schema order
+    if (headerMap.length === 0 && schema.length > 0) {
+      schema.forEach((s, idx) => {
+        headerMap.push({ colIndex: idx + 1, key: s.key });
+      });
+    }
+
     const data: any[] = [];
     sheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return; // Skip header
       const obj: any = {};
-      sheet.columns.forEach((col, i) => {
-        const val = row.getCell(i + 1).value;
-        obj[col.key!] = (val && typeof val === "object" && "result" in val) ? (val as any).result : val;
-      });
-      data.push(obj);
+      let hasData = false;
+
+      for (const h of headerMap) {
+        const cell = row.getCell(h.colIndex);
+        let val = cell.value;
+        if (val && typeof val === "object") {
+          if ("result" in val) val = (val as any).result;
+          else if ("text" in val) val = (val as any).text;
+          else if ("richText" in val) val = (val as any).richText.map((t: any) => t.text).join("");
+        }
+        if (val !== undefined && val !== null && val !== "") {
+          hasData = true;
+        }
+        obj[h.key] = val !== undefined && val !== null ? val : "";
+      }
+
+      if (hasData) {
+        if (obj.id !== undefined && obj.id !== "") obj.id = Number(obj.id) || obj.id;
+        if (obj.flat_id !== undefined && obj.flat_id !== "") obj.flat_id = Number(obj.flat_id) || obj.flat_id;
+        if (obj.maintenance_amount !== undefined) obj.maintenance_amount = Number(obj.maintenance_amount) || 0;
+        if (obj.amount_expected !== undefined) obj.amount_expected = Number(obj.amount_expected) || 0;
+        if (obj.amount_received !== undefined) obj.amount_received = Number(obj.amount_received) || 0;
+        if (obj.amount !== undefined && sheetName === "Expenses") obj.amount = Number(obj.amount) || 0;
+        data.push(obj);
+      }
     });
+
     return data;
   }
 
   async addRow(sheetName: string, data: any, skipSave = false) {
-    const sheet = this.workbook.getWorksheet(sheetName)!;
+    let sheet = this.findWorksheet(sheetName);
+    if (!sheet) {
+      sheet = this.workbook.addWorksheet(sheetName);
+      sheet.columns = (DEFAULT_SCHEMAS[sheetName] || []) as any;
+    }
     const rows = this.getSheetData(sheetName);
     const nextId = rows.length > 0 ? Math.max(...rows.map(r => Number(r.id) || 0)) + 1 : 1;
     if (data.id === undefined) data.id = nextId;
@@ -220,13 +343,16 @@ class ExcelDB {
   }
 
   async updateRow(sheetName: string, id: any, data: any, skipSave = false) {
-    const sheet = this.workbook.getWorksheet(sheetName)!;
+    const sheet = this.findWorksheet(sheetName);
+    if (!sheet) return false;
     let found = false;
+    const schema = DEFAULT_SCHEMAS[sheetName] || [];
+
     sheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return;
       if (String(row.getCell(1).value) === String(id)) {
         Object.keys(data).forEach(key => {
-          const colIndex = sheet.columns.findIndex(c => c.key === key);
+          const colIndex = schema.findIndex(c => c.key === key);
           if (colIndex !== -1) {
             row.getCell(colIndex + 1).value = data[key];
           }
@@ -239,7 +365,8 @@ class ExcelDB {
   }
 
   async deleteRow(sheetName: string, id: any) {
-    const sheet = this.workbook.getWorksheet(sheetName)!;
+    const sheet = this.findWorksheet(sheetName);
+    if (!sheet) return false;
     let rowIndexToDelete = -1;
     sheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return;
@@ -256,11 +383,15 @@ class ExcelDB {
   }
 
   async upsertSetting(key: string, value: string) {
-    const sheet = this.workbook.getWorksheet("Settings")!;
+    let sheet = this.findWorksheet("Settings");
+    if (!sheet) {
+      sheet = this.workbook.addWorksheet("Settings");
+      sheet.columns = DEFAULT_SCHEMAS.Settings as any;
+    }
     let found = false;
     sheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return;
-      if (row.getCell(1).value === key) {
+      if (String(row.getCell(1).value) === key) {
         row.getCell(2).value = value;
         found = true;
       }
@@ -273,7 +404,7 @@ class ExcelDB {
 
   async replaceAllData(payload: { flats: any[]; payments: any[]; expenses: any[]; settings: any[] }) {
     for (const name of ["Flats", "Payments", "Expenses", "Settings"]) {
-      const sheet = this.workbook.getWorksheet(name);
+      const sheet = this.findWorksheet(name);
       if (sheet) {
         const rowCount = sheet.rowCount;
         if (rowCount > 1) {
@@ -282,16 +413,16 @@ class ExcelDB {
       }
     }
 
-    const flatsSheet = this.workbook.getWorksheet("Flats")!;
+    const flatsSheet = this.findWorksheet("Flats")!;
     (payload.flats || []).forEach(f => flatsSheet.addRow(f));
 
-    const paymentsSheet = this.workbook.getWorksheet("Payments")!;
+    const paymentsSheet = this.findWorksheet("Payments")!;
     (payload.payments || []).forEach(p => paymentsSheet.addRow(p));
 
-    const expensesSheet = this.workbook.getWorksheet("Expenses")!;
+    const expensesSheet = this.findWorksheet("Expenses")!;
     (payload.expenses || []).forEach(e => expensesSheet.addRow(e));
 
-    const settingsSheet = this.workbook.getWorksheet("Settings")!;
+    const settingsSheet = this.findWorksheet("Settings")!;
     (payload.settings || []).forEach(s => settingsSheet.addRow(s));
 
     await this.save();
@@ -950,6 +1081,42 @@ app.get("/api/pending-report", (req, res) => {
 });
 
 // Full database export & import for backup / Google Sheets sync
+app.get("/api/excel-status", (req, res) => {
+  try {
+    const filePath = db.getFilePath();
+    const exists = fs.existsSync(filePath);
+    const flats = db.getSheetData("Flats");
+    const payments = db.getSheetData("Payments");
+    const expenses = db.getSheetData("Expenses");
+    res.json({
+      filePath: path.basename(filePath),
+      fullPath: filePath,
+      exists,
+      stats: {
+        flatsCount: flats.length,
+        paymentsCount: payments.length,
+        expensesCount: expenses.length
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/excel-reload", async (req, res) => {
+  try {
+    await db.init();
+    const flats = db.getSheetData("Flats");
+    res.json({
+      success: true,
+      message: `Reloaded ${db.getFilePath()}`,
+      flatsCount: flats.length
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/export", (req, res) => {
   try {
     const data = {

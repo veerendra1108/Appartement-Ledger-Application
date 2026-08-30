@@ -68,29 +68,29 @@ export function App() {
     try {
       setIsLoading(true);
       const [flatsRes, paymentsRes, expensesRes, summaryRes, pendingRes, settingsRes] = await Promise.all([
-        fetch('/api/flats'),
-        fetch(`/api/payments?month=${month}`),
-        fetch(`/api/expenses?month=${month}`),
-        fetch(`/api/ledger-summary?month=${month}`),
-        fetch('/api/pending-report'),
-        fetch('/api/settings')
+        fetch('/api/flats').catch(() => null),
+        fetch(`/api/payments?month=${month}`).catch(() => null),
+        fetch(`/api/expenses?month=${month}`).catch(() => null),
+        fetch(`/api/ledger-summary?month=${month}`).catch(() => null),
+        fetch('/api/pending-report').catch(() => null),
+        fetch('/api/settings').catch(() => null)
       ]);
 
       const [flatsData, paymentsData, expensesData, summaryData, pendingData, settingsData] = await Promise.all([
-        flatsRes.json(),
-        paymentsRes.json(),
-        expensesRes.json(),
-        summaryRes.json(),
-        pendingRes.json(),
-        settingsRes.json()
+        flatsRes && flatsRes.ok ? flatsRes.json().catch(() => []) : [],
+        paymentsRes && paymentsRes.ok ? paymentsRes.json().catch(() => []) : [],
+        expensesRes && expensesRes.ok ? expensesRes.json().catch(() => []) : [],
+        summaryRes && summaryRes.ok ? summaryRes.json().catch(() => null) : null,
+        pendingRes && pendingRes.ok ? pendingRes.json().catch(() => []) : [],
+        settingsRes && settingsRes.ok ? settingsRes.json().catch(() => ({})) : {}
       ]);
 
-      setFlats(flatsData || []);
-      setPayments(paymentsData || []);
-      setExpenses(expensesData || []);
+      setFlats(Array.isArray(flatsData) ? flatsData : []);
+      setPayments(Array.isArray(paymentsData) ? paymentsData : []);
+      setExpenses(Array.isArray(expensesData) ? expensesData : []);
       setSummary(summaryData || null);
-      setPendingReport(pendingData || []);
-      if (settingsData && Object.keys(settingsData).length > 0) {
+      setPendingReport(Array.isArray(pendingData) ? pendingData : []);
+      if (settingsData && typeof settingsData === 'object' && !Array.isArray(settingsData) && Object.keys(settingsData).length > 0) {
         setSettings(prev => ({ ...prev, ...settingsData }));
       }
     } catch (err: any) {
