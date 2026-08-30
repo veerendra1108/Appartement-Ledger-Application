@@ -1,5 +1,5 @@
 {
-  "name": "Apartment Maintenance Ledger",
-  "description": "A comprehensive maintenance collection and expense management system for apartments.",
+  "name": "Apartment Maintenance Ledger & Google Sheets Sync",
+  "description": "Smart apartment maintenance ledger with real-time Google Sheets sync, arrears tracking, and expense management starting from June 2025.",
   "requestFramePermissions": []
 }

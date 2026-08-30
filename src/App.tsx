@@ -1,1145 +1,542 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  LayoutDashboard, 
   Building2, 
-  ReceiptIndianRupee, 
-  Wallet, 
-  FileText, 
-  AlertCircle, 
-  Download, 
-  Plus, 
-  Trash2, 
-  Edit, 
-  Menu, 
-  X, 
-  Printer, 
-  FileJson, 
-  Upload 
+  LayoutDashboard, 
+  CreditCard, 
+  Receipt, 
+  AlertTriangle, 
+  FileSpreadsheet, 
+  SlidersHorizontal, 
+  Home, 
+  CheckCircle2, 
+  AlertCircle,
+  Plus
 } from 'lucide-react';
 import { 
-  formatCurrency, 
-  formatDate, 
-  getMonthKey, 
-  getMonthDisplay, 
   Flat, 
   Payment, 
   Expense, 
   LedgerSummary, 
-  PendingReportItem 
+  PendingReportItem, 
+  AppSettings, 
+  START_MONTH, 
+  DEFAULT_SPREADSHEET_ID 
 } from './types';
-import { generateMonthlyPDF, generateRangePDF } from './pdfUtils';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { GoogleSheetsSyncBar } from './components/GoogleSheetsSyncBar';
+import { MonthSelector } from './components/MonthSelector';
+import { DashboardView } from './components/DashboardView';
+import { PaymentsTable } from './components/PaymentsTable';
+import { ExpensesTable } from './components/ExpensesTable';
+import { ArrearsTracker } from './components/ArrearsTracker';
+import { MonthlyLedgerView } from './components/MonthlyLedgerView';
+import { ReportsAndBulkView } from './components/ReportsAndBulkView';
+import { FlatManagerModal } from './components/FlatManagerModal';
+import { generateMonthlyPDF } from './pdfUtils';
 
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+export function App() {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'payments' | 'expenses' | 'arrears' | 'ledger' | 'reports'>('dashboard');
+  const [currentMonth, setCurrentMonth] = useState<string>(() => {
+    return localStorage.getItem('last_selected_month') || '2025-06';
+  });
 
-type Page = 'dashboard' | 'flats' | 'payments' | 'expenses' | 'ledger' | 'pending' | 'reports';
-
-export default function App() {
-  const [activePage, setActivePage] = useState<Page>('dashboard');
+  // State
   const [flats, setFlats] = useState<Flat[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [settings, setSettings] = useState<Record<string, string>>({ apartment_name: 'Apartment Ledger' });
-  const [selectedMonth, setSelectedMonth] = useState(getMonthKey());
-  const [ledgerSummary, setLedgerSummary] = useState<LedgerSummary | null>(null);
+  const [summary, setSummary] = useState<LedgerSummary | null>(null);
   const [pendingReport, setPendingReport] = useState<PendingReportItem[]>([]);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>({
+    apartment_name: 'Sri Sai Residency',
+    start_month: '2025-06',
+    default_maintenance: '2000',
+    default_watchman_salary: '9000',
+    default_dustbin_amount: '500',
+    google_sheet_id: DEFAULT_SPREADSHEET_ID
+  });
+
   const [isLoading, setIsLoading] = useState(true);
-  const [reportStartMonth, setReportStartMonth] = useState(getMonthKey(new Date(new Date().getFullYear(), 0, 1)));
-  const [reportEndMonth, setReportEndMonth] = useState(getMonthKey());
-
-  // Modals
-  const [showFlatModal, setShowFlatModal] = useState<Flat | boolean>(false);
-  const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
-  const [showExpenseModal, setShowExpenseModal] = useState<boolean>(false);
-  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
-  const [confirmConfig, setConfirmConfig] = useState<{ title: string, message: string, onConfirm: () => void } | null>(null);
-
-  useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(null), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
+  const [showFlatManager, setShowFlatManager] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
   };
 
-  const showConfirm = (title: string, message: string, onConfirm: () => void) => {
-    setConfirmConfig({ title, message, onConfirm });
-  };
-
-  useEffect(() => {
-    fetchInitialData();
-  }, []);
-
-  useEffect(() => {
-    fetchMonthData();
-  }, [selectedMonth]);
-
-  const fetchInitialData = async () => {
-    setIsLoading(true);
+  // Load all initial data
+  const loadData = async (month = currentMonth) => {
     try {
-      const [flatsRes, settingsRes] = await Promise.all([
+      setIsLoading(true);
+      const [flatsRes, paymentsRes, expensesRes, summaryRes, pendingRes, settingsRes] = await Promise.all([
         fetch('/api/flats'),
+        fetch(`/api/payments?month=${month}`),
+        fetch(`/api/expenses?month=${month}`),
+        fetch(`/api/ledger-summary?month=${month}`),
+        fetch('/api/pending-report'),
         fetch('/api/settings')
       ]);
-      setFlats(await flatsRes.json());
-      setSettings(await settingsRes.json());
-    } catch (error) {
-      console.error('Failed to fetch initial data', error);
+
+      const [flatsData, paymentsData, expensesData, summaryData, pendingData, settingsData] = await Promise.all([
+        flatsRes.json(),
+        paymentsRes.json(),
+        expensesRes.json(),
+        summaryRes.json(),
+        pendingRes.json(),
+        settingsRes.json()
+      ]);
+
+      setFlats(flatsData || []);
+      setPayments(paymentsData || []);
+      setExpenses(expensesData || []);
+      setSummary(summaryData || null);
+      setPendingReport(pendingData || []);
+      if (settingsData && Object.keys(settingsData).length > 0) {
+        setSettings(prev => ({ ...prev, ...settingsData }));
+      }
+    } catch (err: any) {
+      console.error('Failed to load data:', err);
+      showToast('Error communicating with backend database', 'error');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const fetchMonthData = async () => {
-    try {
-      const [paymentsRes, expensesRes, summaryRes, pendingRes] = await Promise.all([
-        fetch(`/api/payments?month=${selectedMonth}`),
-        fetch(`/api/expenses?month=${selectedMonth}`),
-        fetch(`/api/ledger-summary?month=${selectedMonth}`),
-        fetch('/api/pending-report')
-      ]);
-      setPayments(await paymentsRes.json());
-      setExpenses(await expensesRes.json());
-      setLedgerSummary(await summaryRes.json());
-      setPendingReport(await pendingRes.json());
-    } catch (error) {
-      console.error('Failed to fetch month data', error);
-    }
-  };
+  useEffect(() => {
+    loadData(currentMonth);
+    localStorage.setItem('last_selected_month', currentMonth);
+  }, [currentMonth]);
 
-  const handleAddFlat = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const data = Object.fromEntries(formData.entries());
-    
-    const method = typeof showFlatModal === 'object' ? 'PUT' : 'POST';
-    const url = typeof showFlatModal === 'object' ? `/api/flats/${showFlatModal.id}` : '/api/flats';
-
+  // Payment Handlers
+  const handleToggleStatus = async (flatId: number, status: 'paid' | 'not_paid', mode = 'UPI') => {
     try {
-      const res = await fetch(url, {
-        method,
+      const res = await fetch('/api/payments/toggle-status', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify({
+          flat_id: flatId,
+          month: currentMonth,
+          status,
+          payment_mode: mode
+        })
       });
+
       if (res.ok) {
-        fetchInitialData();
-        setShowFlatModal(false);
-        showToast(typeof showFlatModal === 'object' ? 'Flat updated' : 'Flat added');
+        await loadData(currentMonth);
+        showToast(`Flat marked as ${status === 'paid' ? 'Paid' : 'Not Paid (Arrears)'}!`);
       } else {
-        const err = await res.json();
-        showToast(err.error || 'Error saving flat', 'error');
+        showToast('Failed to update status', 'error');
       }
-    } catch (error) {
-      showToast('Error saving flat', 'error');
+    } catch (err) {
+      showToast('Network error', 'error');
     }
   };
 
-  const handleAddPayment = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const data = Object.fromEntries(formData.entries());
-    
+  const handleSavePayment = async (paymentData: Partial<Payment>) => {
     try {
       const res = await fetch('/api/payments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(paymentData)
       });
+
       if (res.ok) {
-        fetchMonthData();
-        setShowPaymentModal(false);
-        showToast('Payment recorded successfully');
+        await loadData(currentMonth);
+        showToast('Payment record updated!');
       } else {
-        showToast('Error saving payment', 'error');
+        showToast('Failed to save payment', 'error');
       }
-    } catch (error) {
-      showToast('Error saving payment', 'error');
+    } catch (err) {
+      showToast('Network error', 'error');
     }
   };
 
-  const handleAddExpense = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const data = Object.fromEntries(formData.entries());
-    
+  // Expense Handlers
+  const handleAddExpense = async (expenseData: Omit<Expense, 'id'>) => {
     try {
       const res = await fetch('/api/expenses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(expenseData)
       });
+
       if (res.ok) {
-        fetchMonthData();
-        setShowExpenseModal(false);
-        showToast('Expense recorded successfully');
+        await loadData(currentMonth);
+        showToast('Expense recorded successfully!');
       } else {
-        showToast('Error saving expense', 'error');
+        showToast('Failed to add expense', 'error');
       }
-    } catch (error) {
-      showToast('Error saving expense', 'error');
+    } catch (err) {
+      showToast('Network error', 'error');
     }
   };
 
-  const handleDelete = async (type: 'flats' | 'payments' | 'expenses', id: number) => {
-    showConfirm(
-      'Confirm Deletion',
-      'Are you sure you want to delete this record? This action cannot be undone.',
-      async () => {
-        try {
-          const res = await fetch(`/api/${type}/${id}`, { method: 'DELETE' });
-          if (res.ok) {
-            if (type === 'flats') {
-              await fetchInitialData();
-            } else {
-              await fetchMonthData();
-            }
-            showToast('Record deleted successfully');
-          } else {
-            const errorData = await res.json();
-            showToast(errorData.error || 'Failed to delete', 'error');
-          }
-        } catch (error) {
-          showToast('Error deleting record', 'error');
-        }
+  const handleDeleteExpense = async (id: number) => {
+    try {
+      const res = await fetch(`/api/expenses/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        await loadData(currentMonth);
+        showToast('Expense removed');
       }
+    } catch (err) {
+      showToast('Failed to delete expense', 'error');
+    }
+  };
+
+  // Initialize Month
+  const handleInitializeMonth = async (params: {
+    month: string;
+    watchmanSalary: number;
+    dustbinAmount: number;
+    defaultPaymentStatus: 'paid' | 'not_paid';
+    maintenanceAmount: number;
+  }) => {
+    try {
+      const res = await fetch('/api/initialize-month', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+
+      if (res.ok) {
+        await loadData(params.month);
+        showToast(`Month ${params.month} initialized with Watchman Salary and Dustbin Fee!`);
+      } else {
+        showToast('Initialization failed', 'error');
+      }
+    } catch (err) {
+      showToast('Network error', 'error');
+    }
+  };
+
+  // Bulk Setup
+  const handleBulkUpdate = async (params: {
+    startMonth: string;
+    endMonth: string;
+    maintenanceAmount: number;
+    watchmanSalary: number;
+    dustbinAmount: number;
+    markAsPaid: boolean;
+  }) => {
+    const res = await fetch('/api/bulk-update-maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+
+    if (res.ok) {
+      await loadData(currentMonth);
+    } else {
+      throw new Error('Bulk update failed on server');
+    }
+  };
+
+  // Clear single arrears month
+  const handleClearArrearsDue = async (flatId: number, month: string) => {
+    const res = await fetch('/api/payments/toggle-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        flat_id: flatId,
+        month: month,
+        status: 'paid',
+        payment_mode: 'UPI'
+      })
+    });
+
+    if (res.ok) {
+      await loadData(currentMonth);
+      showToast(`Arrears cleared for ${month}!`);
+    } else {
+      showToast('Failed to clear arrears', 'error');
+    }
+  };
+
+  // Settings Update
+  const handleUpdateSettings = async (newSettings: Record<string, string>) => {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSettings)
+    });
+
+    if (res.ok) {
+      setSettings(prev => ({ ...prev, ...newSettings }));
+      await loadData(currentMonth);
+    } else {
+      throw new Error('Failed to update settings');
+    }
+  };
+
+  // Flat Management Handlers
+  const handleAddFlat = async (flat: Omit<Flat, 'id'>) => {
+    const res = await fetch('/api/flats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(flat)
+    });
+    if (res.ok) {
+      await loadData(currentMonth);
+      showToast(`Flat ${flat.flat_number} added!`);
+    }
+  };
+
+  const handleUpdateFlat = async (id: number, flat: Partial<Flat>) => {
+    const res = await fetch(`/api/flats/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(flat)
+    });
+    if (res.ok) {
+      await loadData(currentMonth);
+      showToast('Flat updated!');
+    }
+  };
+
+  const handleDeleteFlat = async (id: number) => {
+    const res = await fetch(`/api/flats/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      await loadData(currentMonth);
+      showToast('Flat removed');
+    }
+  };
+
+  // Print Monthly PDF
+  const handleExportMonthlyPDF = () => {
+    if (!summary) return;
+    generateMonthlyPDF(
+      settings.apartment_name,
+      currentMonth,
+      summary,
+      payments,
+      expenses,
+      pendingReport
     );
   };
-
-  const handleInitializeMonth = async () => {
-    showConfirm(
-      'Initialize Month',
-      `This will add default expenses (Watchman Salary Rs. 9000 & Dustbin Rs. 3600) and maintenance payments (Rs. 2000) for all flats for ${getMonthDisplay(selectedMonth)}. Continue?`,
-      async () => {
-        try {
-          const res = await fetch('/api/initialize-month', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ month: selectedMonth })
-          });
-          if (res.ok) {
-            fetchMonthData();
-            showToast('Month initialized successfully');
-          } else {
-            showToast('Error initializing month', 'error');
-          }
-        } catch (error) {
-          showToast('Error initializing month', 'error');
-        }
-      }
-    );
-  };
-
-  const handleExport = async () => {
-    const res = await fetch('/api/export');
-    const data = await res.json();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ledger_backup_${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-  };
-
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const data = JSON.parse(event.target?.result as string);
-        const res = await fetch('/api/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
-        });
-        if (res.ok) {
-          fetchInitialData();
-          fetchMonthData();
-          showToast('Data imported successfully');
-        }
-      } catch (error) {
-        showToast('Invalid backup file', 'error');
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'flats', label: 'Flats Management', icon: Building2 },
-    { id: 'payments', label: 'Payments Entry', icon: ReceiptIndianRupee },
-    { id: 'expenses', label: 'Expenses Entry', icon: Wallet },
-    { id: 'ledger', label: 'Monthly Ledger', icon: FileText },
-    { id: 'pending', label: 'Pending Dues', icon: AlertCircle },
-    { id: 'reports', label: 'Reports & Export', icon: Download },
-  ];
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-stone-50">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-stone-600 font-medium">Loading Ledger...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div className="min-h-screen bg-stone-50 flex flex-col md:flex-row font-sans text-stone-900">
-      {/* Mobile Header */}
-      <div className="md:hidden bg-white border-b border-stone-200 p-4 flex items-center justify-between sticky top-0 z-50">
-        <h1 className="font-bold text-emerald-700 truncate">{settings.apartment_name}</h1>
-        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 text-stone-600">
-          {isSidebarOpen ? <X /> : <Menu />}
-        </button>
-      </div>
-
-      {/* Sidebar */}
-      <aside className={cn(
-        "fixed inset-y-0 left-0 z-40 w-64 bg-stone-900 text-stone-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0",
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-      )}>
-        <div className="p-6">
-          <h1 className="text-xl font-bold text-white mb-1">Apartment Ledger</h1>
-          <p className="text-xs text-stone-500 uppercase tracking-widest font-semibold">Management System</p>
+    <div className="min-h-screen bg-stone-100 text-stone-900 flex flex-col font-sans selection:bg-emerald-200">
+      {/* Toast Alert */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-[200] px-4 py-3 rounded-xl shadow-lg border text-sm font-semibold flex items-center gap-2 animate-in slide-in-from-top-3 ${
+          toast.type === 'error' 
+            ? 'bg-rose-50 text-rose-900 border-rose-200' 
+            : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+        }`}>
+          {toast.type === 'error' ? <AlertCircle size={18} className="text-rose-600" /> : <CheckCircle2 size={18} className="text-emerald-600" />}
+          <span>{toast.message}</span>
         </div>
-        <nav className="mt-4 px-3 space-y-1">
-          {navItems.map((item) => (
+      )}
+
+      {/* Top Header */}
+      <header className="bg-white border-b border-stone-200 sticky top-0 z-40 shadow-xs">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            <div className="w-10 h-10 rounded-xl bg-emerald-800 text-white flex items-center justify-center shadow-sm">
+              <Building2 size={22} />
+            </div>
+            <div>
+              <h1 className="text-base sm:text-lg font-black tracking-tight text-stone-900">
+                {settings.apartment_name}
+              </h1>
+              <p className="text-xs text-stone-500 font-medium">
+                Maintenance & Ledger • Starting June 2025
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
             <button
-              key={item.id}
-              onClick={() => {
-                setActivePage(item.id as Page);
-                setIsSidebarOpen(false);
-              }}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
-                activePage === item.id 
-                  ? "bg-emerald-600 text-white" 
-                  : "hover:bg-stone-800 hover:text-white"
-              )}
+              onClick={() => setShowFlatManager(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-100 hover:bg-stone-200 text-stone-800 rounded-xl text-xs font-bold transition-colors"
             >
-              <item.icon size={18} />
-              {item.label}
+              <Home size={14} />
+              <span>Flats ({flats.length})</span>
             </button>
-          ))}
-        </nav>
-        <div className="absolute bottom-0 w-full p-6 border-t border-stone-800">
-          <p className="text-xs text-stone-500">Logged in as Treasurer</p>
+          </div>
         </div>
-      </aside>
+      </header>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        <header className="hidden md:flex bg-white border-b border-stone-200 px-8 py-4 items-center justify-between sticky top-0 z-30">
-          <div>
-            <h2 className="text-lg font-bold text-stone-800">{navItems.find(n => n.id === activePage)?.label}</h2>
-            <p className="text-xs text-stone-500">{settings.apartment_name}</p>
-          </div>
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={handleInitializeMonth}
-              className="px-3 py-2 bg-stone-100 text-stone-600 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-stone-200 transition-colors"
-              title="Add default expenses and payments for this month"
-            >
-              Initialize Month
-            </button>
-            <input 
-              type="month" 
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="px-3 py-2 border border-stone-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-            />
-          </div>
-        </header>
+      {/* Main Content Body */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* 1. Google Sheets & Excel Backend Status Bar */}
+        <GoogleSheetsSyncBar
+          apartmentName={settings.apartment_name}
+          currentMonth={currentMonth}
+          onDataSynced={() => loadData(currentMonth)}
+          showToast={showToast}
+        />
 
-        <div className="p-4 md:p-8 max-w-7xl mx-auto">
-          {activePage === 'dashboard' && (
-            <div className="space-y-8">
-              {/* Stats Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-                <StatCard 
-                  label="Expected Collection" 
-                  value={formatCurrency(ledgerSummary?.expectedCollection || 0)} 
-                  subLabel={getMonthDisplay(selectedMonth)}
-                  icon={ReceiptIndianRupee}
-                  color="blue"
-                />
-                <StatCard 
-                  label="Received Collection" 
-                  value={formatCurrency(ledgerSummary?.receivedCollection || 0)} 
-                  subLabel={`${Math.round(((ledgerSummary?.receivedCollection || 0) / (ledgerSummary?.expectedCollection || 1)) * 100)}% collected`}
-                  icon={Wallet}
-                  color="emerald"
-                />
-                <StatCard 
-                  label="Total Expenses" 
-                  value={formatCurrency(ledgerSummary?.expenses || 0)} 
-                  subLabel={`${expenses.length} transactions`}
-                  icon={Trash2}
-                  color="rose"
-                />
-                <StatCard 
-                  label="Current Balance" 
-                  value={formatCurrency(ledgerSummary?.closingBalance || 0)} 
-                  subLabel="Net available"
-                  icon={LayoutDashboard}
-                  color="amber"
-                />
-              </div>
+        {/* 2. Month Selector & Initializer */}
+        <MonthSelector
+          currentMonth={currentMonth}
+          onMonthChange={(m) => setCurrentMonth(m)}
+          onInitializeMonth={handleInitializeMonth}
+          isMonthInitialized={payments.length > 0 || expenses.length > 0}
+        />
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Recent Payments */}
-                <Card title="Recent Payments" action={<button onClick={() => setActivePage('payments')} className="text-xs text-emerald-600 font-bold uppercase tracking-wider hover:underline">View All</button>}>
-                  <div className="divide-y divide-stone-100">
-                    {payments.slice(0, 5).map(p => (
-                      <div key={p.id} className="py-3 flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-stone-800">{p.flat_number} - {p.owner_name}</p>
-                          <p className="text-xs text-stone-500">{formatDate(p.date_received)} • {p.payment_mode}</p>
-                        </div>
-                        <p className="font-mono font-bold text-emerald-600">{formatCurrency(p.amount_received)}</p>
-                      </div>
-                    ))}
-                    {payments.length === 0 && <p className="py-8 text-center text-stone-400 italic">No payments recorded for this month</p>}
-                  </div>
-                </Card>
+        {/* 3. Navigation Tabs */}
+        <div className="flex items-center gap-1 border-b border-stone-200 pb-2 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('dashboard')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all ${
+              activeTab === 'dashboard'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+            }`}
+          >
+            <LayoutDashboard size={15} />
+            <span>Dashboard</span>
+          </button>
 
-                {/* Recent Expenses */}
-                <Card title="Recent Expenses" action={<button onClick={() => setActivePage('expenses')} className="text-xs text-emerald-600 font-bold uppercase tracking-wider hover:underline">View All</button>}>
-                  <div className="divide-y divide-stone-100">
-                    {expenses.slice(0, 5).map(e => (
-                      <div key={e.id} className="py-3 flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-stone-800">{e.category}</p>
-                          <p className="text-xs text-stone-500">{e.description} • {formatDate(e.date)}</p>
-                        </div>
-                        <p className="font-mono font-bold text-rose-600">-{formatCurrency(e.amount)}</p>
-                      </div>
-                    ))}
-                    {expenses.length === 0 && <p className="py-8 text-center text-stone-400 italic">No expenses recorded for this month</p>}
-                  </div>
-                </Card>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={() => setActiveTab('payments')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all ${
+              activeTab === 'payments'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+            }`}
+          >
+            <CreditCard size={15} />
+            <span>Collections (₹2000/Flat)</span>
+          </button>
 
-          {activePage === 'flats' && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-bold text-stone-800">Flat Directory ({flats.length})</h3>
-                <button 
-                  onClick={() => setShowFlatModal(true)}
-                  className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 shadow-sm"
-                >
-                  <Plus size={18} /> Add Flat
-                </button>
-              </div>
-              <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
-                <table className="w-full text-left">
-                  <thead className="bg-stone-50 border-b border-stone-200">
-                    <tr>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Flat No.</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Owner Name</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Monthly Maint.</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {flats.map(flat => (
-                      <tr key={flat.id} className="hover:bg-stone-50 transition-colors">
-                        <td className="px-6 py-4 font-bold text-stone-800">{flat.flat_number}</td>
-                        <td className="px-6 py-4 text-stone-600">{flat.owner_name}</td>
-                        <td className="px-6 py-4 font-mono text-stone-800">{formatCurrency(flat.maintenance_amount)}</td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex justify-end gap-2">
-                            <button onClick={() => setShowFlatModal(flat)} className="p-2 text-stone-400 hover:text-emerald-600"><Edit size={16} /></button>
-                            <button onClick={() => handleDelete('flats', flat.id)} className="p-2 text-stone-400 hover:text-rose-600"><Trash2 size={16} /></button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={() => setActiveTab('expenses')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all ${
+              activeTab === 'expenses'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+            }`}
+          >
+            <Receipt size={15} />
+            <span>Expenses (Watchman & Dustbin)</span>
+          </button>
 
-          {activePage === 'payments' && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-bold text-stone-800">Maintenance Collections</h3>
-                <button 
-                  onClick={() => setShowPaymentModal(true)}
-                  className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 shadow-sm"
-                >
-                  <Plus size={18} /> Record Payment
-                </button>
-              </div>
-              <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
-                <table className="w-full text-left">
-                  <thead className="bg-stone-50 border-b border-stone-200">
-                    <tr>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Flat</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Month</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Amount</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Date</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Mode</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {payments.map(p => (
-                      <tr key={p.id} className="hover:bg-stone-50 transition-colors">
-                        <td className="px-6 py-4">
-                          <p className="font-bold text-stone-800">{p.flat_number}</p>
-                          <p className="text-xs text-stone-500">{p.owner_name}</p>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-stone-600">{getMonthDisplay(p.month)}</td>
-                        <td className="px-6 py-4 font-mono font-bold text-emerald-600">{formatCurrency(p.amount_received)}</td>
-                        <td className="px-6 py-4 text-sm text-stone-600">{formatDate(p.date_received)}</td>
-                        <td className="px-6 py-4">
-                          <span className="px-2 py-1 bg-stone-100 text-stone-600 rounded text-[10px] font-bold uppercase tracking-wider">{p.payment_mode}</span>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <button onClick={() => handleDelete('payments', p.id)} className="p-2 text-stone-400 hover:text-rose-600"><Trash2 size={16} /></button>
-                        </td>
-                      </tr>
-                    ))}
-                    {payments.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-12 text-center text-stone-400 italic">No payments recorded for this month</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={() => setActiveTab('arrears')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all ${
+              activeTab === 'arrears'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+            }`}
+          >
+            <AlertTriangle size={15} className={pendingReport.length > 0 ? 'text-rose-500' : ''} />
+            <span>Pending Dues & Arrears</span>
+            {pendingReport.length > 0 && (
+              <span className="bg-rose-500 text-white text-[10px] px-1.5 py-0.2 rounded-full font-bold">
+                {pendingReport.length}
+              </span>
+            )}
+          </button>
 
-          {activePage === 'expenses' && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-bold text-stone-800">Expense Management</h3>
-                <button 
-                  onClick={() => setShowExpenseModal(true)}
-                  className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-700 shadow-sm"
-                >
-                  <Plus size={18} /> Add Expense
-                </button>
-              </div>
-              <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
-                <table className="w-full text-left">
-                  <thead className="bg-stone-50 border-b border-stone-200">
-                    <tr>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Date</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Category</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Description</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Amount</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Vendor</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {expenses.map(e => (
-                      <tr key={e.id} className="hover:bg-stone-50 transition-colors">
-                        <td className="px-6 py-4 text-sm text-stone-600">{formatDate(e.date)}</td>
-                        <td className="px-6 py-4 font-bold text-stone-800">{e.category}</td>
-                        <td className="px-6 py-4 text-sm text-stone-600">{e.description}</td>
-                        <td className="px-6 py-4 font-mono font-bold text-rose-600">{formatCurrency(e.amount)}</td>
-                        <td className="px-6 py-4 text-sm text-stone-600">{e.vendor || '-'}</td>
-                        <td className="px-6 py-4 text-right">
-                          <button onClick={() => handleDelete('expenses', e.id)} className="p-2 text-stone-400 hover:text-rose-600"><Trash2 size={16} /></button>
-                        </td>
-                      </tr>
-                    ))}
-                    {expenses.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-12 text-center text-stone-400 italic">No expenses recorded for this month</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={() => setActiveTab('ledger')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all ${
+              activeTab === 'ledger'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+            }`}
+          >
+            <FileSpreadsheet size={15} />
+            <span>Monthly Ledger & PDF</span>
+          </button>
 
-          {activePage === 'ledger' && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-bold text-stone-800">Monthly Ledger Statement</h3>
-                <button 
-                  onClick={() => generateMonthlyPDF(settings.apartment_name, selectedMonth, ledgerSummary!, payments, expenses, pendingReport)}
-                  className="bg-stone-900 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-stone-800 shadow-sm"
-                >
-                  <Printer size={18} /> Print PDF
-                </button>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Card title="Balance Summary">
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Opening Balance</span>
-                      <span className="font-mono font-bold">{formatCurrency(ledgerSummary?.openingBalance || 0)}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Add: Collections</span>
-                      <span className="font-mono font-bold text-emerald-600">+{formatCurrency(ledgerSummary?.receivedCollection || 0)}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Less: Expenses</span>
-                      <span className="font-mono font-bold text-rose-600">-{formatCurrency(ledgerSummary?.expenses || 0)}</span>
-                    </div>
-                    <div className="pt-4 border-t border-stone-100 flex justify-between items-center">
-                      <span className="font-bold text-stone-800">Closing Balance</span>
-                      <span className="font-mono font-bold text-xl text-emerald-700">{formatCurrency(ledgerSummary?.closingBalance || 0)}</span>
-                    </div>
-                  </div>
-                </Card>
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all ${
+              activeTab === 'reports'
+                ? 'bg-stone-900 text-white shadow-sm'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+            }`}
+          >
+            <SlidersHorizontal size={15} />
+            <span>Bulk Setup & Reports</span>
+          </button>
+        </div>
 
-                <Card title="Collection Performance">
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Expected Collection</span>
-                      <span className="font-mono font-bold">{formatCurrency(ledgerSummary?.expectedCollection || 0)}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Actual Received</span>
-                      <span className="font-mono font-bold text-emerald-600">{formatCurrency(ledgerSummary?.receivedCollection || 0)}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-stone-500">Pending Amount</span>
-                      <span className="font-mono font-bold text-rose-600">{formatCurrency((ledgerSummary?.expectedCollection || 0) - (ledgerSummary?.receivedCollection || 0))}</span>
-                    </div>
-                    <div className="pt-4">
-                      <div className="w-full bg-stone-100 h-2 rounded-full overflow-hidden">
-                        <div 
-                          className="bg-emerald-500 h-full transition-all duration-500" 
-                          style={{ width: `${Math.min(100, ((ledgerSummary?.receivedCollection || 0) / (ledgerSummary?.expectedCollection || 1)) * 100)}%` }}
-                        />
-                      </div>
-                      <p className="text-[10px] text-stone-400 mt-2 text-right uppercase font-bold tracking-wider">
-                        {Math.round(((ledgerSummary?.receivedCollection || 0) / (ledgerSummary?.expectedCollection || 1)) * 100)}% Collected
-                      </p>
-                    </div>
-                  </div>
-                </Card>
-              </div>
-            </div>
-          )}
-
-          {activePage === 'pending' && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xl font-bold text-stone-800">Pending Maintenance Dues</h3>
-                <div className="text-right">
-                  <p className="text-xs text-stone-500 uppercase font-bold tracking-wider">Total Outstanding</p>
-                  <p className="text-2xl font-mono font-bold text-rose-600">
-                    {formatCurrency(pendingReport.reduce((sum, p) => sum + p.totalPendingAmount, 0))}
-                  </p>
-                </div>
-              </div>
-              <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
-                <table className="w-full text-left">
-                  <thead className="bg-stone-50 border-b border-stone-200">
-                    <tr>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Flat</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Owner</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Pending Months</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider">Total Dues</th>
-                      <th className="px-6 py-4 text-xs font-bold text-stone-500 uppercase tracking-wider text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {pendingReport.map(p => (
-                      <tr key={p.id} className="hover:bg-stone-50 transition-colors">
-                        <td className="px-6 py-4 font-bold text-stone-800">{p.flat_number}</td>
-                        <td className="px-6 py-4 text-stone-600">{p.owner_name}</td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-wrap gap-1">
-                            {p.pendingMonths.map(m => (
-                              <span key={m} className="px-2 py-0.5 bg-rose-50 text-rose-600 text-[10px] font-bold rounded border border-rose-100">
-                                {getMonthDisplay(m).split(' ')[0]}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 font-mono font-bold text-rose-600">{formatCurrency(p.totalPendingAmount)}</td>
-                        <td className="px-6 py-4 text-right">
-                          <button 
-                            onClick={() => {
-                              setActivePage('payments');
-                              setShowPaymentModal(true);
-                            }}
-                            className="text-emerald-600 hover:text-emerald-700 text-xs font-bold uppercase tracking-wider"
-                          >
-                            Collect
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {pendingReport.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="px-6 py-12 text-center text-stone-400 italic">All maintenance dues are cleared!</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activePage === 'reports' && (
-            <div className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <Card title="Annual Report" icon={Download}>
-                  <p className="text-sm text-stone-500 mb-6">Generate a comprehensive report for the entire financial year.</p>
-                  <button 
-                    onClick={async () => {
-                      const year = selectedMonth.split('-')[0];
-                      const months = Array.from({length: 12}, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
-                      const data = await Promise.all(months.map(async m => {
-                        const [summaryRes, expensesRes] = await Promise.all([
-                          fetch(`/api/ledger-summary?month=${m}`),
-                          fetch(`/api/expenses?month=${m}`)
-                        ]);
-                        const summary = await summaryRes.json();
-                        const expenses = await expensesRes.json();
-                        return { 
-                          month: m, 
-                          received: summary.receivedCollection, 
-                          spent: summary.expenses, 
-                          opening: summary.openingBalance,
-                          closing: summary.closingBalance,
-                          expenses: expenses
-                        };
-                      }));
-                      generateRangePDF(settings.apartment_name, `Annual Maintenance Summary - ${year}`, data);
-                    }}
-                    className="w-full bg-emerald-600 text-white py-2 rounded-lg font-bold hover:bg-emerald-700 transition-colors"
-                  >
-                    Generate Yearly PDF
-                  </button>
-                </Card>
-
-                <Card title="Custom Range Report" icon={FileText}>
-                  <p className="text-sm text-stone-500 mb-4">Select a custom period to generate a detailed summary report.</p>
-                  <div className="space-y-3 mb-6">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">From</label>
-                        <input 
-                          type="month" 
-                          value={reportStartMonth}
-                          onChange={(e) => setReportStartMonth(e.target.value)}
-                          className="w-full px-2 py-1.5 border border-stone-200 rounded text-sm"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-stone-400 uppercase mb-1">To</label>
-                        <input 
-                          type="month" 
-                          value={reportEndMonth}
-                          onChange={(e) => setReportEndMonth(e.target.value)}
-                          className="w-full px-2 py-1.5 border border-stone-200 rounded text-sm"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={async () => {
-                      const start = new Date(reportStartMonth + "-01");
-                      const end = new Date(reportEndMonth + "-01");
-                      const months: string[] = [];
-                      let current = new Date(start);
-                      
-                      while (current <= end) {
-                        months.push(`${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`);
-                        current.setMonth(current.getMonth() + 1);
-                      }
-
-                      if (months.length === 0) {
-                        showToast('Invalid date range', 'error');
-                        return;
-                      }
-
-                      setIsLoading(true);
-                      try {
-                        const data = await Promise.all(months.map(async m => {
-                          const [summaryRes, expensesRes] = await Promise.all([
-                            fetch(`/api/ledger-summary?month=${m}`),
-                            fetch(`/api/expenses?month=${m}`)
-                          ]);
-                          const summary = await summaryRes.json();
-                          const expenses = await expensesRes.json();
-                          return { 
-                            month: m, 
-                            received: summary.receivedCollection, 
-                            spent: summary.expenses, 
-                            opening: summary.openingBalance,
-                            closing: summary.closingBalance,
-                            expenses: expenses
-                          };
-                        }));
-                        generateRangePDF(
-                          settings.apartment_name, 
-                          `Maintenance Summary ${getMonthDisplay(reportStartMonth)} to ${getMonthDisplay(reportEndMonth)}`, 
-                          data
-                        );
-                      } catch (error) {
-                        showToast('Error generating report', 'error');
-                      } finally {
-                        setIsLoading(false);
-                      }
-                    }}
-                    className="w-full bg-stone-900 text-white py-2 rounded-lg font-bold hover:bg-stone-800 transition-colors"
-                  >
-                    Generate Range PDF
-                  </button>
-                </Card>
-
-                <Card title="Data Backup" icon={FileJson}>
-                  <p className="text-sm text-stone-500 mb-6">Export all your data to a JSON file for safe keeping or migration.</p>
-                  <button 
-                    onClick={handleExport}
-                    className="w-full bg-stone-900 text-white py-2 rounded-lg font-bold hover:bg-stone-800 transition-colors"
-                  >
-                    Export Backup (JSON)
-                  </button>
-                </Card>
-
-                <Card title="Restore Data" icon={Upload}>
-                  <p className="text-sm text-stone-500 mb-6">Restore your data from a previously exported backup file.</p>
-                  <label className="w-full bg-white border-2 border-dashed border-stone-200 text-stone-600 py-2 rounded-lg font-bold hover:border-emerald-500 hover:text-emerald-600 cursor-pointer flex items-center justify-center transition-all">
-                    <input type="file" accept=".json" onChange={handleImport} className="hidden" />
-                    Upload Backup
-                  </label>
-                </Card>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Card title="Admin Bulk Update" icon={AlertCircle}>
-                  <p className="text-sm text-stone-500 mb-6">
-                    Bulk update maintenance (Rs. 2000) and Watchman Salary (Rs. 9000) from June 2025 to Dec 2026.
-                    <br />
-                    <span className="text-rose-600 font-bold">Warning: This will overwrite existing payments for these months.</span>
-                  </p>
-                  <button 
-                    onClick={() => {
-                      showConfirm(
-                        'Bulk Update Data',
-                        'This will update all flats to Rs. 2000 maintenance and set Watchman Salary to Rs. 9000 for June 2025 - Dec 2026. Existing payments for these months will be overwritten. Continue?',
-                        async () => {
-                          setIsLoading(true);
-                          try {
-                            const res = await fetch('/api/bulk-update-maintenance', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({
-                                startMonth: '2025-06',
-                                endMonth: '2026-12',
-                                maintenanceAmount: 2000,
-                                watchmanSalary: 9000
-                              })
-                            });
-                            if (res.ok) {
-                              fetchInitialData();
-                              fetchMonthData();
-                              showToast('Bulk update completed successfully');
-                            } else {
-                              showToast('Error during bulk update', 'error');
-                            }
-                          } catch (error) {
-                            showToast('Error during bulk update', 'error');
-                          } finally {
-                            setIsLoading(false);
-                          }
-                        }
-                      );
-                    }}
-                    className="w-full bg-rose-600 text-white py-2 rounded-lg font-bold hover:bg-rose-700 transition-colors"
-                  >
-                    Run Bulk Update (Jun 2025 - Dec 2026)
-                  </button>
-                </Card>
-
-                <Card title="Apartment Settings">
-                <form onSubmit={async (e) => {
-                  e.preventDefault();
-                  const name = new FormData(e.currentTarget).get('apartment_name') as string;
-                  await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ apartment_name: name })
-                  });
-                  setSettings({ ...settings, apartment_name: name });
-                  showToast('Settings updated');
-                }} className="flex gap-4 items-end max-w-md">
-                  <div className="flex-1">
-                    <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Apartment Name</label>
-                    <input 
-                      name="apartment_name" 
-                      defaultValue={settings.apartment_name} 
-                      className="w-full px-3 py-2 border border-stone-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <button className="bg-emerald-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-emerald-700">Save</button>
-                </form>
-              </Card>
-            </div>
-          </div>
+        {/* 4. Active Tab Views */}
+        {activeTab === 'dashboard' && (
+          <DashboardView
+            currentMonth={currentMonth}
+            summary={summary}
+            payments={payments}
+            expenses={expenses}
+            onNavigateTab={(tab) => setActiveTab(tab as any)}
+          />
         )}
-        </div>
+
+        {activeTab === 'payments' && (
+          <PaymentsTable
+            currentMonth={currentMonth}
+            flats={flats}
+            payments={payments}
+            onToggleStatus={handleToggleStatus}
+            onSavePayment={handleSavePayment}
+            onAddFlat={() => setShowFlatManager(true)}
+          />
+        )}
+
+        {activeTab === 'expenses' && (
+          <ExpensesTable
+            currentMonth={currentMonth}
+            expenses={expenses}
+            onAddExpense={handleAddExpense}
+            onDeleteExpense={handleDeleteExpense}
+          />
+        )}
+
+        {activeTab === 'arrears' && (
+          <ArrearsTracker
+            pendingReport={pendingReport}
+            flats={flats}
+            payments={payments}
+            onClearMonthDue={handleClearArrearsDue}
+            onExportArrearsPDF={handleExportMonthlyPDF}
+          />
+        )}
+
+        {activeTab === 'ledger' && (
+          <MonthlyLedgerView
+            apartmentName={settings.apartment_name}
+            currentMonth={currentMonth}
+            summary={summary}
+            payments={payments}
+            expenses={expenses}
+            pendingReport={pendingReport}
+            onExportPDF={handleExportMonthlyPDF}
+          />
+        )}
+
+        {activeTab === 'reports' && (
+          <ReportsAndBulkView
+            settings={settings}
+            onUpdateSettings={handleUpdateSettings}
+            onBulkUpdate={handleBulkUpdate}
+            showToast={showToast}
+          />
+        )}
       </main>
 
-      {/* Modals */}
-      {showFlatModal && (
-        <Modal title={typeof showFlatModal === 'object' ? 'Edit Flat' : 'Add New Flat'} onClose={() => setShowFlatModal(false)}>
-          <form onSubmit={handleAddFlat} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Flat Number</label>
-                <input name="flat_number" defaultValue={typeof showFlatModal === 'object' ? showFlatModal.flat_number : ''} required className="w-full px-3 py-2 border border-stone-200 rounded-lg" placeholder="e.g. 101" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Maintenance Amount</label>
-                <input name="maintenance_amount" type="number" defaultValue={typeof showFlatModal === 'object' ? showFlatModal.maintenance_amount : '2000'} required className="w-full px-3 py-2 border border-stone-200 rounded-lg" />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Owner Name</label>
-              <input name="owner_name" defaultValue={typeof showFlatModal === 'object' ? showFlatModal.owner_name : ''} required className="w-full px-3 py-2 border border-stone-200 rounded-lg" placeholder="Full Name" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Notes</label>
-              <textarea name="notes" defaultValue={typeof showFlatModal === 'object' ? showFlatModal.notes : ''} className="w-full px-3 py-2 border border-stone-200 rounded-lg h-24" placeholder="Any additional details..." />
-            </div>
-            <button className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold hover:bg-emerald-700 shadow-md">Save Flat Details</button>
-          </form>
-        </Modal>
-      )}
-
-      {showPaymentModal && (
-        <Modal title="Record Maintenance Payment" onClose={() => setShowPaymentModal(false)}>
-          <form onSubmit={handleAddPayment} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Select Flat</label>
-                <select name="flat_id" required className="w-full px-3 py-2 border border-stone-200 rounded-lg">
-                  {flats.map(f => <option key={f.id} value={f.id}>{f.flat_number} - {f.owner_name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">For Month</label>
-                <input name="month" type="month" defaultValue={selectedMonth} required className="w-full px-3 py-2 border border-stone-200 rounded-lg" />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Amount Received</label>
-                <input 
-                  name="amount_received" 
-                  type="number" 
-                  defaultValue="2000" 
-                  required 
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500" 
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Payment Date</label>
-                <input name="date_received" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="w-full px-3 py-2 border border-stone-200 rounded-lg" />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Payment Mode</label>
-                <select name="payment_mode" required className="w-full px-3 py-2 border border-stone-200 rounded-lg">
-                  <option>UPI</option>
-                  <option>Cash</option>
-                  <option>Bank Transfer</option>
-                  <option>Cheque</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-2 pt-6">
-                <input type="checkbox" name="is_arrears" id="is_arrears" className="w-4 h-4 text-emerald-600 rounded" />
-                <label htmlFor="is_arrears" className="text-sm text-stone-600 font-medium">Arrears Payment</label>
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Remarks</label>
-              <input name="remarks" className="w-full px-3 py-2 border border-stone-200 rounded-lg" placeholder="Optional notes..." />
-            </div>
-            <button className="w-full bg-emerald-600 text-white py-3 rounded-lg font-bold hover:bg-emerald-700 shadow-md">Record Payment</button>
-          </form>
-        </Modal>
-      )}
-
-      {showExpenseModal && (
-        <Modal title="Record New Expense" onClose={() => setShowExpenseModal(false)}>
-          <form onSubmit={handleAddExpense} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Date</label>
-                <input name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="w-full px-3 py-2 border border-stone-200 rounded-lg" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Category</label>
-                <select name="category" required className="w-full px-3 py-2 border border-stone-200 rounded-lg">
-                  <option>Salary</option>
-                  <option>Cleaning</option>
-                  <option>Electricity</option>
-                  <option>Water</option>
-                  <option>Repairs</option>
-                  <option>Lift Maintenance</option>
-                  <option>Security</option>
-                  <option>Miscellaneous</option>
-                </select>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Amount</label>
-                <input name="amount" type="number" required className="w-full px-3 py-2 border border-stone-200 rounded-lg" placeholder="0.00" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Vendor / Person</label>
-                <input name="vendor" className="w-full px-3 py-2 border border-stone-200 rounded-lg" placeholder="Paid to..." />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Description</label>
-              <input name="description" required className="w-full px-3 py-2 border border-stone-200 rounded-lg" placeholder="What was this for?" />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-500 uppercase mb-1">Payment Mode</label>
-              <select name="payment_mode" required className="w-full px-3 py-2 border border-stone-200 rounded-lg">
-                <option>Cash</option>
-                <option>UPI</option>
-                <option>Bank Transfer</option>
-                <option>Cheque</option>
-              </select>
-            </div>
-            <button className="w-full bg-rose-600 text-white py-3 rounded-lg font-bold hover:bg-rose-700 shadow-md">Record Expense</button>
-          </form>
-        </Modal>
-      )}
-
-      {confirmConfig && (
-        <ConfirmModal 
-          title={confirmConfig.title}
-          message={confirmConfig.message}
-          onConfirm={() => {
-            confirmConfig.onConfirm();
-            setConfirmConfig(null);
-          }}
-          onClose={() => setConfirmConfig(null)}
+      {/* Flat Manager Modal */}
+      {showFlatManager && (
+        <FlatManagerModal
+          flats={flats}
+          onClose={() => setShowFlatManager(false)}
+          onAddFlat={handleAddFlat}
+          onUpdateFlat={handleUpdateFlat}
+          onDeleteFlat={handleDeleteFlat}
         />
       )}
 
-      {toast && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          onClose={() => setToast(null)} 
-        />
-      )}
-    </div>
-  );
-}
-
-function Toast({ message, type, onClose }: { message: string, type: 'success' | 'error', onClose: () => void }) {
-  return (
-    <div className={cn(
-      "fixed bottom-8 right-8 z-[200] px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-bottom-4 duration-300",
-      type === 'success' ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"
-    )}>
-      <p className="font-bold text-sm">{message}</p>
-      <button onClick={onClose} className="p-1 hover:bg-white/20 rounded-full transition-colors"><X size={16} /></button>
-    </div>
-  );
-}
-
-function ConfirmModal({ title, message, onConfirm, onClose }: { title: string, message: string, onConfirm: () => void, onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
-        <div className="p-6 text-center">
-          <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            <AlertCircle size={24} />
-          </div>
-          <h3 className="text-lg font-bold text-stone-800 mb-2">{title}</h3>
-          <p className="text-stone-500 text-sm mb-6">{message}</p>
-          <div className="flex gap-3">
-            <button onClick={onClose} className="flex-1 px-4 py-2 border border-stone-200 text-stone-600 rounded-lg font-bold hover:bg-stone-50 transition-colors">Cancel</button>
-            <button onClick={onConfirm} className="flex-1 px-4 py-2 bg-rose-600 text-white rounded-lg font-bold hover:bg-rose-700 transition-colors shadow-md">Confirm</button>
-          </div>
+      {/* Footer */}
+      <footer className="bg-white border-t border-stone-200 py-4 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between text-xs text-stone-500 gap-2">
+          <span>{settings.apartment_name} Maintenance & Ledger System • Starting June 2025</span>
+          <span>Synced with Google Sheets & Local Excel Storage</span>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }
 
-function StatCard({ label, value, subLabel, icon: Icon, color }: { label: string, value: string, subLabel: string, icon: any, color: 'emerald' | 'rose' | 'blue' | 'amber' }) {
-  const colors = {
-    emerald: "bg-emerald-50 text-emerald-600 border-emerald-100",
-    rose: "bg-rose-50 text-rose-600 border-rose-100",
-    blue: "bg-blue-50 text-blue-600 border-blue-100",
-    amber: "bg-amber-50 text-amber-600 border-amber-100"
-  };
-
-  return (
-    <div className={cn("p-6 rounded-2xl border bg-white shadow-sm", colors[color])}>
-      <div className="flex justify-between items-start mb-4">
-        <div className={cn("p-2 rounded-lg", colors[color].replace('bg-', 'bg-opacity-20 bg-'))}>
-          <Icon size={20} />
-        </div>
-      </div>
-      <p className="text-xs font-bold uppercase tracking-wider opacity-70 mb-1">{label}</p>
-      <h4 className="text-2xl font-mono font-bold mb-1">{value}</h4>
-      <p className="text-[10px] font-medium opacity-60 uppercase tracking-tight">{subLabel}</p>
-    </div>
-  );
-}
-
-function Card({ title, children, action, icon: Icon }: { title: string, children: React.ReactNode, action?: React.ReactNode, icon?: any }) {
-  return (
-    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
-      <div className="px-6 py-4 border-b border-stone-100 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {Icon && <Icon size={18} className="text-stone-400" />}
-          <h3 className="font-bold text-stone-800 text-sm uppercase tracking-wider">{title}</h3>
-        </div>
-        {action}
-      </div>
-      <div className="p-6">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Modal({ title, children, onClose }: { title: string, children: React.ReactNode, onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-stone-900/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-        <div className="px-6 py-4 border-b border-stone-100 flex items-center justify-between bg-stone-50">
-          <h3 className="font-bold text-stone-800">{title}</h3>
-          <button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-full transition-colors"><X size={20} /></button>
-        </div>
-        <div className="p-6">
-          {children}
-        </div>
-      </div>
-    </div>
-  );
-}
+export default App;

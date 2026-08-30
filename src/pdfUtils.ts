@@ -18,40 +18,48 @@ export const generateMonthlyPDF = (
   doc.setTextColor(40, 40, 40);
   doc.text(apartmentName, 105, 20, { align: 'center' });
   
-  doc.setFontSize(16);
-  doc.text(`Maintenance Ledger - ${monthName}`, 105, 30, { align: 'center' });
+  doc.setFontSize(15);
+  doc.text(`Apartment Maintenance Ledger - ${monthName}`, 105, 30, { align: 'center' });
 
   // Summary Box
-  doc.setFontSize(12);
-  doc.rect(14, 40, 182, 40);
-  doc.text(`Opening Balance: ${formatCurrency(summary.openingBalance)}`, 20, 50);
-  doc.text(`Total Collection: ${formatCurrency(summary.receivedCollection)}`, 20, 60);
-  doc.text(`Total Expenses: ${formatCurrency(summary.expenses)}`, 110, 50);
-  doc.text(`Closing Balance: ${formatCurrency(summary.closingBalance)}`, 110, 60);
-  doc.text(`Expected Collection: ${formatCurrency(summary.expectedCollection)}`, 20, 70);
-  doc.text(`Pending this month: ${formatCurrency(summary.expectedCollection - summary.receivedCollection)}`, 110, 70);
+  doc.setFontSize(11);
+  doc.rect(14, 38, 182, 44);
+  doc.text(`Opening Balance: ${formatCurrency(summary.openingBalance)}`, 20, 47);
+  doc.text(`Expected Collection: ${formatCurrency(summary.expectedCollection)}`, 20, 56);
+  doc.text(`Received Collection: ${formatCurrency(summary.receivedCollection)}`, 20, 65);
+  doc.text(`Unpaid Dues (This Month): ${formatCurrency(summary.unpaidArrearsThisMonth || (summary.expectedCollection - summary.receivedCollection))}`, 20, 74);
+
+  doc.text(`Total Expenses: ${formatCurrency(summary.expenses)}`, 110, 47);
+  doc.text(`Closing Balance: ${formatCurrency(summary.closingBalance)}`, 110, 56);
+  doc.text(`Total Cumulative Arrears: ${formatCurrency(summary.totalCumulativeArrears || 0)}`, 110, 65);
 
   // Collections Table
-  doc.setFontSize(14);
-  doc.text('Collections Received', 14, 90);
+  doc.setFontSize(13);
+  doc.text('Collections / Payment Status', 14, 92);
   autoTable(doc, {
-    startY: 95,
-    head: [['Flat', 'Owner', 'Amount', 'Date', 'Mode']],
-    body: payments.map(p => [
-      p.flat_number,
-      p.owner_name,
-      formatCurrency(p.amount_received),
-      formatDate(p.date_received),
-      p.payment_mode
-    ]),
+    startY: 96,
+    head: [['Flat', 'Owner', 'Expected', 'Received', 'Status', 'Date', 'Mode']],
+    body: payments.map(p => {
+      const statusLabel = p.status === 'not_paid' ? 'NOT PAID (Arrears)' : p.status === 'partial' ? 'PARTIAL' : 'PAID';
+      return [
+        p.flat_number,
+        p.owner_name,
+        formatCurrency(p.amount_expected || 2000),
+        formatCurrency(p.amount_received),
+        statusLabel,
+        p.date_received ? formatDate(p.date_received) : '-',
+        p.payment_mode || '-'
+      ];
+    }),
+    headStyles: { fillColor: [44, 122, 95] },
   });
 
   // Expenses Table
-  const expenseStartY = ((doc as any).lastAutoTable?.finalY || 95) + 15;
-  if (expenseStartY > 270) doc.addPage();
-  doc.text('Expenses Paid', 14, expenseStartY > 270 ? 20 : expenseStartY);
+  const expenseStartY = ((doc as any).lastAutoTable?.finalY || 96) + 15;
+  if (expenseStartY > 260) doc.addPage();
+  doc.text('Expenses Paid (Watchman, Dustbin, Utilities)', 14, expenseStartY > 260 ? 20 : expenseStartY);
   autoTable(doc, {
-    startY: (expenseStartY > 270 ? 20 : expenseStartY) + 5,
+    startY: (expenseStartY > 260 ? 20 : expenseStartY) + 5,
     head: [['Date', 'Category', 'Description', 'Amount', 'Vendor']],
     body: expenses.length > 0 ? [
       ...expenses.map(e => [
@@ -63,33 +71,35 @@ export const generateMonthlyPDF = (
       ]),
       [{ content: 'Total Monthly Expenses', colSpan: 3, styles: { halign: 'right', fontStyle: 'bold' } }, { content: formatCurrency(summary.expenses), styles: { fontStyle: 'bold' } }, '']
     ] : [['-', 'No expenses recorded', '-', '-', '-']],
+    headStyles: { fillColor: [180, 60, 60] },
   });
 
   // Pending List
   const pendingStartY = ((doc as any).lastAutoTable?.finalY || (expenseStartY + 20)) + 15;
-  if (pendingStartY > 250) doc.addPage();
-  doc.text('Pending Dues', 14, pendingStartY > 250 ? 20 : pendingStartY);
+  if (pendingStartY > 240) doc.addPage();
+  doc.text('Outstanding Arrears & Pending Dues (From June 2025)', 14, pendingStartY > 240 ? 20 : pendingStartY);
   autoTable(doc, {
-    startY: (pendingStartY > 250 ? 20 : pendingStartY) + 5,
-    head: [['Flat', 'Owner', 'Pending Months', 'Total Pending']],
-    body: pending.map(p => [
+    startY: (pendingStartY > 240 ? 20 : pendingStartY) + 5,
+    head: [['Flat', 'Owner', 'Pending Months', 'Total Arrears Due']],
+    body: pending.length > 0 ? pending.map(p => [
       p.flat_number,
       p.owner_name,
-      p.pendingMonths.length,
+      p.pendingMonths.map(m => typeof m === 'object' ? m.month : m).join(', '),
       formatCurrency(p.totalPendingAmount)
-    ]),
+    ]) : [['-', 'All dues are cleared!', '-', 'Rs. 0']],
+    headStyles: { fillColor: [160, 82, 45] },
   });
 
   // Footer
-  const footerY = (doc as any).lastAutoTable.finalY + 30;
+  const footerY = ((doc as any).lastAutoTable?.finalY || 220) + 25;
   if (footerY > 270) doc.addPage();
   const finalY = footerY > 270 ? 40 : footerY;
   doc.line(14, finalY, 60, finalY);
   doc.text('Treasurer Signature', 14, finalY + 5);
   doc.line(140, finalY, 186, finalY);
-  doc.text('Manager Signature', 140, finalY + 5);
+  doc.text('Secretary Signature', 140, finalY + 5);
 
-  doc.save(`Ledger_${monthKey}.pdf`);
+  doc.save(`Apartment_Ledger_${monthKey}.pdf`);
 };
 
 export const generateRangePDF = (
@@ -121,16 +131,16 @@ export const generateRangePDF = (
 
   const summaryY = (doc as any).lastAutoTable.finalY + 15;
   doc.setFontSize(14);
-  doc.text('Yearly Total', 14, summaryY);
+  doc.text('Summary Total', 14, summaryY);
   doc.setFontSize(12);
   doc.text(`Total Collections: ${formatCurrency(totalReceived)}`, 14, summaryY + 10);
   doc.text(`Total Expenses: ${formatCurrency(totalSpent)}`, 14, summaryY + 20);
-  doc.text(`Net Surplus/Deficit: ${formatCurrency(totalReceived - totalSpent)}`, 14, summaryY + 30);
+  doc.text(`Net Balance Difference: ${formatCurrency(totalReceived - totalSpent)}`, 14, summaryY + 30);
 
   // Detailed Expenses Section
   doc.addPage();
   doc.setFontSize(18);
-  doc.text('Detailed Annual Expenses', 105, 20, { align: 'center' });
+  doc.text('Detailed Expenses Log', 105, 20, { align: 'center' });
   
   let currentY = 30;
 
