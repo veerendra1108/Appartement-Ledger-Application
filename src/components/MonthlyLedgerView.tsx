@@ -116,7 +116,11 @@ export function MonthlyLedgerView({
 
           <div className="divide-y divide-stone-100 max-h-80 overflow-y-auto">
             {payments.map((p) => {
-              const isPaid = p.status === 'paid';
+              const rec = Number(p.amount_received) || 0;
+              const exp = Number(p.amount_expected) || 2000;
+              const isPaid = p.status === 'paid' || rec >= exp;
+              const hasArrearsCleared = rec > exp;
+
               return (
                 <div key={p.id} className="p-3 text-xs flex items-center justify-between hover:bg-stone-50">
                   <div className="flex items-center gap-2">
@@ -127,9 +131,15 @@ export function MonthlyLedgerView({
                   </div>
                   <div className="text-right">
                     <span className={`font-mono font-bold ${isPaid ? 'text-emerald-700' : 'text-rose-600'}`}>
-                      {formatCurrency(p.amount_received)}
+                      {formatCurrency(rec)}
                     </span>
-                    <span className="text-[10px] text-stone-400 block">{p.payment_mode || 'Pending'}</span>
+                    {hasArrearsCleared ? (
+                      <span className="text-[10px] text-emerald-800 font-bold block">
+                        (+{formatCurrency(rec - exp)} arrears)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-stone-400 block">{p.payment_mode || 'Pending'}</span>
+                    )}
                   </div>
                 </div>
               );

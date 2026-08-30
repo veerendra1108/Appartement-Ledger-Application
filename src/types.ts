@@ -84,6 +84,8 @@ export interface LedgerSummary {
   openingBalance: number;
   expectedCollection: number;
   receivedCollection: number;
+  regularReceived?: number;
+  arrearsReceived?: number;
   unpaidArrearsThisMonth: number;
   totalCumulativeArrears: number;
   expenses: number;

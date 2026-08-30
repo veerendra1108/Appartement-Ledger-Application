@@ -3,12 +3,10 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import fs from "fs";
 import ExcelJS from "exceljs";
-import Database from "better-sqlite3";
 
 const app = express();
 const PORT = 3000;
 const EXCEL_PATH = "maintenance_data.xlsx";
-const DB_PATH = "maintenance.db";
 const START_MONTH = "2025-06";
 
 app.use(express.json({ limit: "10mb" }));
@@ -78,51 +76,10 @@ class ExcelDB {
       }
     }
 
-    // Check if initial seeding or migration is required
+    // Check if initial seeding is required
     const flats = this.getSheetData("Flats");
     if (!fileExists || flats.length === 0) {
-      if (fs.existsSync(DB_PATH)) {
-        console.log("Migrating data from SQLite to Excel...");
-        try {
-          const sqliteDb = new Database(DB_PATH);
-          
-          const dbFlats = sqliteDb.prepare("SELECT * FROM flats").all() as any[];
-          const flatsSheet = this.workbook.getWorksheet("Flats")!;
-          dbFlats.forEach(f => {
-            flatsSheet.addRow({
-              ...f,
-              maintenance_amount: f.maintenance_amount || 2000
-            });
-          });
-
-          const dbPayments = sqliteDb.prepare("SELECT * FROM payments").all() as any[];
-          const paymentsSheet = this.workbook.getWorksheet("Payments")!;
-          dbPayments.forEach(p => {
-            const flat = dbFlats.find(f => f.id === p.flat_id);
-            paymentsSheet.addRow({
-              ...p,
-              flat_number: flat?.flat_number || '',
-              owner_name: flat?.owner_name || '',
-              amount_expected: flat?.maintenance_amount || 2000,
-              status: (p.amount_received > 0 ? 'paid' : 'not_paid')
-            });
-          });
-
-          const dbExpenses = sqliteDb.prepare("SELECT * FROM expenses").all() as any[];
-          const expensesSheet = this.workbook.getWorksheet("Expenses")!;
-          dbExpenses.forEach(e => expensesSheet.addRow(e));
-
-          const dbSettings = sqliteDb.prepare("SELECT * FROM settings").all() as any[];
-          const settingsSheet = this.workbook.getWorksheet("Settings")!;
-          dbSettings.forEach(s => settingsSheet.addRow(s));
-          
-          sqliteDb.close();
-        } catch (err) {
-          console.error("Migration failed, adding default records:", err);
-        }
-      }
-
-      // If still empty, seed default flats (e.g. 101-105, 201-205, etc.) with ₹2000 default maintenance
+      // Seed default flats (e.g. 101-105, 201-205, etc.) with ₹2000 default maintenance
       if (this.getSheetData("Flats").length === 0) {
         const flatsSheet = this.workbook.getWorksheet("Flats")!;
         const defaultFlats = [
@@ -158,6 +115,71 @@ class ExcelDB {
 
       await this.save();
     }
+
+    // Run duplicate/orphan payment cleanup
+    await this.cleanupOrphansAndDuplicates();
+  }
+
+  async cleanupOrphansAndDuplicates() {
+    try {
+      const flats = this.getSheetData("Flats");
+      const validFlatIds = new Set(flats.map(f => String(f.id)));
+      const paymentsSheet = this.workbook.getWorksheet("Payments");
+      if (!paymentsSheet) return;
+
+      const allPayments = this.getSheetData("Payments");
+      if (allPayments.length === 0) return;
+
+      const uniqueMap = new Map<string, any>();
+      let hasChanges = false;
+
+      for (const p of allPayments) {
+        // Drop orphan payments for flats that no longer exist
+        if (!validFlatIds.has(String(p.flat_id))) {
+          hasChanges = true;
+          continue;
+        }
+
+        const key = `${p.flat_id}_${p.month}`;
+        if (uniqueMap.has(key)) {
+          hasChanges = true;
+          const prev = uniqueMap.get(key);
+          // Keep the one with received amount or latest
+          if ((Number(p.amount_received) || 0) >= (Number(prev.amount_received) || 0)) {
+            uniqueMap.set(key, p);
+          }
+        } else {
+          uniqueMap.set(key, p);
+        }
+      }
+
+      if (hasChanges || allPayments.length !== uniqueMap.size) {
+        const rowCount = paymentsSheet.rowCount;
+        if (rowCount > 1) {
+          paymentsSheet.spliceRows(2, rowCount - 1);
+        }
+        Array.from(uniqueMap.values()).forEach(p => paymentsSheet.addRow(p));
+        await this.save();
+        console.log(`Cleaned up payments: kept ${uniqueMap.size} valid records, removed duplicates/orphans.`);
+      }
+    } catch (e) {
+      console.error("Error during payment cleanup:", e);
+    }
+  }
+
+  async deletePaymentsByFlatId(flatId: any) {
+    const sheet = this.workbook.getWorksheet("Payments");
+    if (!sheet) return;
+    let modified = false;
+    for (let i = sheet.rowCount; i >= 2; i--) {
+      const row = sheet.getRow(i);
+      const cellFlatId = row.getCell(2).value; // flat_id column
+      if (String(cellFlatId) === String(flatId)) {
+        sheet.spliceRows(i, 1);
+        modified = true;
+      }
+    }
+    if (modified) await this.save();
   }
 
   async save() {
@@ -333,7 +355,11 @@ app.put("/api/flats/:id", async (req, res) => {
 
 app.delete("/api/flats/:id", async (req, res) => {
   try {
-    const success = await db.deleteRow("Flats", req.params.id);
+    const flatId = req.params.id;
+    const success = await db.deleteRow("Flats", flatId);
+    if (success) {
+      await db.deletePaymentsByFlatId(flatId);
+    }
     res.json({ success });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -345,28 +371,36 @@ app.get("/api/payments", (req, res) => {
     const { month } = req.query;
     const payments = db.getSheetData("Payments");
     const flats = db.getSheetData("Flats");
+    const validFlatMap = new Map(flats.map(f => [String(f.id), f]));
     
-    let combined = payments.map(p => {
-      const flat = flats.find(f => String(f.id) === String(p.flat_id));
-      const expected = Number(p.amount_expected) || Number(flat?.maintenance_amount) || 2000;
-      const received = Number(p.amount_received) || 0;
-      let status = p.status;
-      if (!status) {
-        if (received >= expected) status = "paid";
-        else if (received === 0) status = "not_paid";
-        else status = "partial";
+    // Filter out orphans and deduplicate by flat_id + month
+    const dedupedMap = new Map<string, any>();
+    for (const p of payments) {
+      const flat = validFlatMap.get(String(p.flat_id));
+      if (!flat) continue; // skip orphan
+      
+      const key = `${p.flat_id}_${p.month}`;
+      if (!dedupedMap.has(key) || (Number(p.amount_received) || 0) >= (Number(dedupedMap.get(key).amount_received) || 0)) {
+        const expected = Number(p.amount_expected) || Number(flat.maintenance_amount) || 2000;
+        const received = Number(p.amount_received) || 0;
+        let status = p.status;
+        if (!status) {
+          if (received >= expected) status = "paid";
+          else if (received === 0) status = "not_paid";
+          else status = "partial";
+        }
+        dedupedMap.set(key, {
+          ...p,
+          flat_number: flat.flat_number || p.flat_number,
+          owner_name: flat.owner_name || p.owner_name,
+          amount_expected: expected,
+          amount_received: received,
+          status: status
+        });
       }
+    }
 
-      return {
-        ...p,
-        flat_number: flat?.flat_number || p.flat_number,
-        owner_name: flat?.owner_name || p.owner_name,
-        amount_expected: expected,
-        amount_received: received,
-        status: status
-      };
-    });
-
+    let combined = Array.from(dedupedMap.values());
     if (month) {
       combined = combined.filter(p => p.month === month);
     }
@@ -453,6 +487,60 @@ app.post("/api/payments/toggle-status", async (req, res) => {
   }
 });
 
+// Clear past arrears by recording collection in the current active month (preserves historical month records intact)
+app.post("/api/payments/clear-arrears-in-current-month", async (req, res) => {
+  try {
+    const { flat_id, due_month, target_collection_month, amount, payment_mode } = req.body;
+    const flats = db.getSheetData("Flats");
+    const flat = flats.find(f => String(f.id) === String(flat_id));
+    if (!flat) return res.status(404).json({ error: "Flat not found" });
+
+    const clearAmount = Number(amount) || Number(flat.maintenance_amount) || 2000;
+    const targetMonth = target_collection_month || new Date().toISOString().slice(0, 7);
+    const dateReceived = new Date().toISOString().split("T")[0];
+    const mode = payment_mode || "UPI";
+
+    const payments = db.getSheetData("Payments");
+    const existingTargetPayment = payments.find(p => String(p.flat_id) === String(flat_id) && p.month === targetMonth);
+
+    const baseExpected = Number(flat.maintenance_amount) || 2000;
+    let newAmountReceived = clearAmount;
+    let existingRemarks = "";
+
+    if (existingTargetPayment) {
+      newAmountReceived = (Number(existingTargetPayment.amount_received) || 0) + clearAmount;
+      existingRemarks = existingTargetPayment.remarks ? `${existingTargetPayment.remarks}; ` : "";
+    }
+
+    const updatedRecord = {
+      flat_id: flat.id,
+      flat_number: flat.flat_number,
+      owner_name: flat.owner_name,
+      month: targetMonth,
+      amount_expected: existingTargetPayment?.amount_expected || baseExpected,
+      amount_received: newAmountReceived,
+      status: "paid",
+      date_received: existingTargetPayment?.date_received || dateReceived,
+      is_arrears: 0,
+      payment_mode: mode,
+      remarks: `${existingRemarks}Cleared ${due_month} arrears (₹${clearAmount}) in ${targetMonth}`
+    };
+
+    if (existingTargetPayment) {
+      await db.updateRow("Payments", existingTargetPayment.id, updatedRecord);
+    } else {
+      await db.addRow("Payments", updatedRecord);
+    }
+
+    res.json({
+      success: true,
+      message: `Recorded ₹${clearAmount} arrears collection in ${targetMonth} for Flat ${flat.flat_number}. Historical record for ${due_month} preserved.`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete("/api/payments/:id", async (req, res) => {
   try {
     const success = await db.deleteRow("Payments", req.params.id);
@@ -497,23 +585,32 @@ app.delete("/api/expenses/:id", async (req, res) => {
 app.get("/api/ledger-summary", (req, res) => {
   try {
     const { month } = req.query as { month: string };
+    const targetMonthStr = month || START_MONTH;
     const flats = db.getSheetData("Flats");
-    const allPayments = db.getSheetData("Payments");
+    const validFlatIds = new Set(flats.map(f => String(f.id)));
+    const allPaymentsRaw = db.getSheetData("Payments");
     const allExpenses = db.getSheetData("Expenses");
 
-    const calculateForMonth = (m: string) => {
-      const monthPayments = allPayments.filter(p => p.month === m);
-      const monthExpenses = allExpenses.filter(e => String(e.date).startsWith(m));
-      
-      const received = monthPayments.reduce((sum, p) => sum + (Number(p.amount_received) || 0), 0);
-      const spent = monthExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
-      const expected = flats.reduce((sum, f) => sum + (Number(f.maintenance_amount) || 2000), 0);
-      const unpaidArrearsThisMonth = Math.max(0, expected - received);
-      
-      return { received, spent, expected, unpaidArrearsThisMonth };
-    };
+    // Deduplicate all payments by flat_id + month, ignoring orphans
+    const dedupedPaymentsMap = new Map<string, any>();
+    for (const p of allPaymentsRaw) {
+      if (!validFlatIds.has(String(p.flat_id))) continue;
+      const key = `${p.flat_id}_${p.month}`;
+      if (!dedupedPaymentsMap.has(key) || (Number(p.amount_received) || 0) >= (Number(dedupedPaymentsMap.get(key).amount_received) || 0)) {
+        dedupedPaymentsMap.set(key, p);
+      }
+    }
+    const allPayments = Array.from(dedupedPaymentsMap.values());
 
-    const currentMonthDate = new Date((month || START_MONTH) + "-01");
+    const currentMonthPayments = allPayments.filter(p => p.month === targetMonthStr);
+    const currentMonthExpenses = allExpenses.filter(e => String(e.date).startsWith(targetMonthStr));
+
+    const totalReceivedThisMonth = currentMonthPayments.reduce((sum, p) => sum + (Number(p.amount_received) || 0), 0);
+    const totalSpentThisMonth = currentMonthExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    const expectedCollection = flats.reduce((sum, f) => sum + (Number(f.maintenance_amount) || 2000), 0);
+
+    // Opening balance strictly before targetMonthStr-01
+    const currentMonthDate = new Date(targetMonthStr + "-01");
     let openingBalance = 0;
     
     allPayments.forEach(p => {
@@ -527,33 +624,72 @@ app.get("/api/ledger-summary", (req, res) => {
       }
     });
 
-    const current = calculateForMonth(month || START_MONTH);
-    const closingBalance = openingBalance + current.received - current.spent;
+    const closingBalance = openingBalance + totalReceivedThisMonth - totalSpentThisMonth;
 
-    // Cumulative arrears from START_MONTH to current month
-    let totalCumulativeArrears = 0;
+    // Timeline months from START_MONTH to targetMonthStr
     const startYear = parseInt(START_MONTH.split("-")[0]);
     const startMo = parseInt(START_MONTH.split("-")[1]) - 1;
-    const targetYear = parseInt(month.split("-")[0]);
-    const targetMo = parseInt(month.split("-")[1]) - 1;
+    const targetYear = parseInt(targetMonthStr.split("-")[0]);
+    const targetMo = parseInt(targetMonthStr.split("-")[1]) - 1;
 
+    const allMonths: string[] = [];
     let cur = new Date(startYear, startMo, 1);
     const target = new Date(targetYear, targetMo, 1);
-
     while (cur <= target) {
-      const mKey = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`;
-      const mData = calculateForMonth(mKey);
-      totalCumulativeArrears += mData.unpaidArrearsThisMonth;
+      allMonths.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
       cur.setMonth(cur.getMonth() + 1);
     }
 
+    // Cumulative arrears calculated per flat
+    let totalCumulativeArrears = 0;
+    let unpaidArrearsThisMonth = 0;
+
+    flats.forEach(flat => {
+      const flatPayments = allPayments.filter(p => String(p.flat_id) === String(flat.id));
+      const expectedMaint = Number(flat.maintenance_amount) || 2000;
+      
+      let flatTotalExpected = 0;
+      let flatTotalReceived = 0;
+
+      allMonths.forEach(m => {
+        const p = flatPayments.find(p => p.month === m);
+        flatTotalExpected += Number(p?.amount_expected) || expectedMaint;
+        flatTotalReceived += Number(p?.amount_received) || 0;
+      });
+
+      const netFlatDue = Math.max(0, flatTotalExpected - flatTotalReceived);
+      totalCumulativeArrears += netFlatDue;
+
+      // Current month flat status
+      const currentMonthPayment = flatPayments.find(p => p.month === targetMonthStr);
+      const curExpected = Number(currentMonthPayment?.amount_expected) || expectedMaint;
+      const curReceived = Number(currentMonthPayment?.amount_received) || 0;
+      if (curReceived < curExpected && netFlatDue > 0) {
+        unpaidArrearsThisMonth += Math.min(curExpected - curReceived, netFlatDue);
+      }
+    });
+
+    // Breakdown of received
+    let regularReceived = 0;
+    let arrearsReceived = 0;
+    currentMonthPayments.forEach(p => {
+      const exp = Number(p.amount_expected) || 2000;
+      const rec = Number(p.amount_received) || 0;
+      regularReceived += Math.min(rec, exp);
+      if (rec > exp) {
+        arrearsReceived += (rec - exp);
+      }
+    });
+
     res.json({
       openingBalance,
-      receivedCollection: current.received,
-      expenses: current.spent,
+      receivedCollection: totalReceivedThisMonth,
+      regularReceived,
+      arrearsReceived,
+      expenses: totalSpentThisMonth,
       closingBalance,
-      expectedCollection: current.expected,
-      unpaidArrearsThisMonth: current.unpaidArrearsThisMonth,
+      expectedCollection,
+      unpaidArrearsThisMonth,
       totalCumulativeArrears
     });
   } catch (err: any) {
@@ -727,17 +863,33 @@ app.post("/api/bulk-update-maintenance", async (req, res) => {
 // Comprehensive Pending Arrears Report starting from June 2025
 app.get("/api/pending-report", (req, res) => {
   try {
+    const { month } = req.query as { month?: string };
     const flats = db.getSheetData("Flats");
-    const allPayments = db.getSheetData("Payments");
+    const validFlatIds = new Set(flats.map(f => String(f.id)));
+    const allPaymentsRaw = db.getSheetData("Payments");
     
+    // Deduplicate and filter orphans
+    const dedupedPaymentsMap = new Map<string, any>();
+    for (const p of allPaymentsRaw) {
+      if (!validFlatIds.has(String(p.flat_id))) continue;
+      const key = `${p.flat_id}_${p.month}`;
+      if (!dedupedPaymentsMap.has(key) || (Number(p.amount_received) || 0) >= (Number(dedupedPaymentsMap.get(key).amount_received) || 0)) {
+        dedupedPaymentsMap.set(key, p);
+      }
+    }
+    const allPayments = Array.from(dedupedPaymentsMap.values());
+
     // Generate all months from START_MONTH (June 2025) to current or selected month
     const startYear = parseInt(START_MONTH.split("-")[0]);
     const startMo = parseInt(START_MONTH.split("-")[1]) - 1;
-    const now = new Date();
+    
+    const targetMonthStr = month || new Date().toISOString().slice(0, 7);
+    const targetYear = parseInt(targetMonthStr.split("-")[0]);
+    const targetMo = parseInt(targetMonthStr.split("-")[1]) - 1;
     
     const allMonths: string[] = [];
     let cur = new Date(startYear, startMo, 1);
-    const end = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(targetYear, targetMo, 1);
 
     while (cur <= end) {
       allMonths.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`);
@@ -748,22 +900,34 @@ app.get("/api/pending-report", (req, res) => {
       const flatPayments = allPayments.filter(p => String(p.flat_id) === String(flat.id));
       const expectedMaint = Number(flat.maintenance_amount) || 2000;
       
+      // Total received money up to target month
+      let totalReceivedAcrossTimeline = 0;
+      for (const m of allMonths) {
+        const p = flatPayments.find(p => p.month === m);
+        if (p) {
+          totalReceivedAcrossTimeline += (Number(p.amount_received) || 0);
+        }
+      }
+
+      // Chronologically satisfy month expected amounts
+      let remainingMoney = totalReceivedAcrossTimeline;
       const pendingMonths: { month: string; amount: number; status: string }[] = [];
       let totalPending = 0;
 
       for (const m of allMonths) {
-        const payment = flatPayments.find(p => p.month === m);
-        if (!payment) {
-          pendingMonths.push({ month: m, amount: expectedMaint, status: "not_paid" });
-          totalPending += expectedMaint;
+        const p = flatPayments.find(p => p.month === m);
+        const exp = Number(p?.amount_expected) || expectedMaint;
+
+        if (remainingMoney >= exp) {
+          remainingMoney -= exp;
+        } else if (remainingMoney > 0) {
+          const due = exp - remainingMoney;
+          pendingMonths.push({ month: m, amount: due, status: "partial" });
+          totalPending += due;
+          remainingMoney = 0;
         } else {
-          const rec = Number(payment.amount_received) || 0;
-          const exp = Number(payment.amount_expected) || expectedMaint;
-          if (rec < exp || payment.status === "not_paid") {
-            const due = Math.max(0, exp - rec);
-            pendingMonths.push({ month: m, amount: due, status: payment.status || "not_paid" });
-            totalPending += due;
-          }
+          pendingMonths.push({ month: m, amount: exp, status: "not_paid" });
+          totalPending += exp;
         }
       }
       

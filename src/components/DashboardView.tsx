@@ -106,11 +106,17 @@ export function DashboardView({
           </div>
           <div className="my-2">
             <p className="text-xl font-bold font-mono text-emerald-900">{formatCurrency(received)}</p>
-            <div className="w-full bg-emerald-200 h-1.5 rounded-full mt-1.5 overflow-hidden">
-              <div className="bg-emerald-600 h-full rounded-full" style={{ width: `${collectionPercent}%` }} />
-            </div>
+            {summary?.arrearsReceived && summary.arrearsReceived > 0 ? (
+              <p className="text-[10px] text-emerald-800 font-semibold mt-0.5">
+                (₹{summary.regularReceived?.toLocaleString() || (received - summary.arrearsReceived).toLocaleString()} reg + ₹{summary.arrearsReceived.toLocaleString()} arrears)
+              </p>
+            ) : (
+              <div className="w-full bg-emerald-200 h-1.5 rounded-full mt-1.5 overflow-hidden">
+                <div className="bg-emerald-600 h-full rounded-full" style={{ width: `${collectionPercent}%` }} />
+              </div>
+            )}
           </div>
-          <div className="text-[11px] font-bold text-emerald-700">{collectionPercent}% Collected</div>
+          <div className="text-[11px] font-bold text-emerald-700">{collectionPercent}% of monthly target</div>
         </div>
 
         {/* 3. Unpaid Dues This Month */}

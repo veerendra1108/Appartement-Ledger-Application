@@ -12,14 +12,17 @@ import {
   Calendar,
   CreditCard,
   User,
-  Plus
+  Plus,
+  ArrowDownCircle,
+  ShieldAlert
 } from 'lucide-react';
-import { Flat, Payment, PaymentStatus, formatCurrency, formatDate } from '../types';
+import { Flat, Payment, PaymentStatus, PendingReportItem, formatCurrency, formatDate, getMonthDisplay } from '../types';
 
 interface PaymentsTableProps {
   currentMonth: string;
   flats: Flat[];
   payments: Payment[];
+  pendingReport?: PendingReportItem[];
   onToggleStatus: (flatId: number, status: 'paid' | 'not_paid', mode?: string) => Promise<void>;
   onSavePayment: (payment: Partial<Payment>) => Promise<void>;
   onAddFlat?: () => void;
@@ -29,6 +32,7 @@ export function PaymentsTable({
   currentMonth,
   flats,
   payments,
+  pendingReport = [],
   onToggleStatus,
   onSavePayment,
   onAddFlat
@@ -44,16 +48,23 @@ export function PaymentsTable({
     dateReceived: string;
     paymentMode: string;
     remarks: string;
+    pastArrears: number;
+    pastMonthsText: string;
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Combine flats with payments for the current month
+  // Combine flats with payments for the current month and check pending report
   const rows = flats.map(flat => {
     const payment = payments.find(p => String(p.flat_id) === String(flat.id) && p.month === currentMonth);
     const expected = Number(payment?.amount_expected) || Number(flat.maintenance_amount) || 2000;
     const received = payment ? Number(payment.amount_received) : 0;
     
     let status: PaymentStatus = payment?.status || (payment ? (received >= expected ? 'paid' : received === 0 ? 'not_paid' : 'partial') : 'not_paid');
+
+    const pendingItem = pendingReport.find(p => String(p.id) === String(flat.id));
+    const priorPendingMonths = pendingItem?.pendingMonths.filter(m => (typeof m === 'object' ? m.month : m) !== currentMonth) || [];
+    const pastArrears = priorPendingMonths.reduce((sum, m) => sum + (typeof m === 'object' ? m.amount : (Number(flat.maintenance_amount) || 2000)), 0);
+    const pastMonthsText = priorPendingMonths.map(m => getMonthDisplay(typeof m === 'object' ? m.month : m)).join(', ');
 
     return {
       flat,
@@ -63,7 +74,9 @@ export function PaymentsTable({
       status,
       dateReceived: payment?.date_received || '',
       mode: payment?.payment_mode || (status === 'paid' ? 'UPI' : '-'),
-      remarks: payment?.remarks || ''
+      remarks: payment?.remarks || '',
+      pastArrears,
+      pastMonthsText
     };
   });
 
@@ -89,6 +102,11 @@ export function PaymentsTable({
     const received = payment ? Number(payment.amount_received) : expected;
     const status: PaymentStatus = payment?.status || (received >= expected ? 'paid' : received === 0 ? 'not_paid' : 'partial');
 
+    const pendingItem = pendingReport.find(p => String(p.id) === String(flat.id));
+    const priorPendingMonths = pendingItem?.pendingMonths.filter(m => (typeof m === 'object' ? m.month : m) !== currentMonth) || [];
+    const pastArrears = priorPendingMonths.reduce((sum, m) => sum + (typeof m === 'object' ? m.amount : (Number(flat.maintenance_amount) || 2000)), 0);
+    const pastMonthsText = priorPendingMonths.map(m => getMonthDisplay(typeof m === 'object' ? m.month : m)).join(', ');
+
     setEditingPayment({
       flat,
       payment,
@@ -97,7 +115,9 @@ export function PaymentsTable({
       status,
       dateReceived: payment?.date_received || new Date().toISOString().split('T')[0],
       paymentMode: payment?.payment_mode || 'UPI',
-      remarks: payment?.remarks || ''
+      remarks: payment?.remarks || '',
+      pastArrears,
+      pastMonthsText
     });
   };
 
@@ -138,7 +158,7 @@ export function PaymentsTable({
             </span>
           </h2>
           <p className="text-xs text-stone-500 mt-0.5">
-            Default maintenance: ₹2,000/flat. Mark as "Paid" or "Not Paid (Arrears)" with one click.
+            Default maintenance: ₹2,000/flat. Past arrears can be collected in the current month without mutating historical records.
           </p>
         </div>
 
@@ -200,10 +220,11 @@ export function PaymentsTable({
                 </td>
               </tr>
             ) : (
-              filteredRows.map(({ flat, payment, expected, received, status, dateReceived, mode }) => {
+              filteredRows.map(({ flat, payment, expected, received, status, dateReceived, mode, remarks, pastArrears }) => {
                 const isPaid = status === 'paid';
                 const isNotPaid = status === 'not_paid';
                 const isPartial = status === 'partial';
+                const hasExtraArrearsCollection = received > expected;
 
                 return (
                   <tr 
@@ -224,14 +245,27 @@ export function PaymentsTable({
                         <User size={13} className="text-stone-400 hidden sm:inline" />
                         <span>{flat.owner_name}</span>
                       </div>
+                      {pastArrears > 0 && isNotPaid && (
+                        <div className="text-[10px] text-rose-600 font-semibold mt-0.5 flex items-center gap-1">
+                          <ShieldAlert size={10} />
+                          <span>Has {formatCurrency(pastArrears)} prior arrears</span>
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-medium text-stone-600">
                       {formatCurrency(expected)}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-bold text-stone-900">
-                      <span className={isPaid ? 'text-emerald-700' : isNotPaid ? 'text-rose-600' : 'text-amber-600'}>
-                        {formatCurrency(received)}
-                      </span>
+                      <div>
+                        <span className={isPaid ? 'text-emerald-700' : isNotPaid ? 'text-rose-600' : 'text-amber-600'}>
+                          {formatCurrency(received)}
+                        </span>
+                        {hasExtraArrearsCollection && (
+                          <span className="block text-[10px] text-emerald-700 font-sans font-bold">
+                            (+{formatCurrency(received - expected)} Arrears)
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4 text-center">
                       {isPaid && (
@@ -258,6 +292,7 @@ export function PaymentsTable({
                         <div>
                           <span>{dateReceived ? formatDate(dateReceived) : 'Recorded'}</span>
                           <span className="text-stone-400 ml-1.5">• {mode}</span>
+                          {remarks && <span className="text-[10px] text-stone-400 block truncate max-w-xs">{remarks}</span>}
                         </div>
                       ) : (
                         <span className="text-rose-400 font-medium italic">Added to Arrears</span>
@@ -273,7 +308,7 @@ export function PaymentsTable({
                               ? 'bg-emerald-600 text-white border-emerald-600' 
                               : 'bg-stone-50 text-stone-600 border-stone-200 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300'
                           }`}
-                          title="Mark Paid (₹2000)"
+                          title={`Mark Current Month Paid (${formatCurrency(expected)})`}
                         >
                           <Check size={14} />
                         </button>
@@ -295,7 +330,7 @@ export function PaymentsTable({
                         <button
                           onClick={() => handleOpenEdit(flat, payment)}
                           className="p-1.5 rounded-lg bg-stone-50 text-stone-600 border border-stone-200 hover:bg-stone-100 hover:text-stone-900 transition-colors"
-                          title="Edit Payment Details"
+                          title="Edit Payment & Arrears"
                         >
                           <Edit3 size={14} />
                         </button>
@@ -347,7 +382,7 @@ export function PaymentsTable({
                 <h3 className="font-bold text-stone-900 text-base">
                   Update Payment • Flat {editingPayment.flat.flat_number}
                 </h3>
-                <p className="text-xs text-stone-500">{editingPayment.flat.owner_name} - {currentMonth}</p>
+                <p className="text-xs text-stone-500">{editingPayment.flat.owner_name} • {getMonthDisplay(currentMonth)}</p>
               </div>
               <button 
                 onClick={() => setEditingPayment(null)}
@@ -358,6 +393,54 @@ export function PaymentsTable({
             </div>
 
             <form onSubmit={handleSaveModal} className="p-6 space-y-4 text-sm">
+              {/* Past Arrears Notification & Quick Options */}
+              {editingPayment.pastArrears > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-xs">
+                  <div className="flex items-center justify-between text-amber-800 font-bold">
+                    <span className="flex items-center gap-1">
+                      <AlertCircle size={13} />
+                      Prior Arrears Due: {formatCurrency(editingPayment.pastArrears)}
+                    </span>
+                    <span className="text-[10px] text-amber-600 font-medium">
+                      ({editingPayment.pastMonthsText})
+                    </span>
+                  </div>
+                  <p className="text-stone-600 text-[11px]">
+                    If collecting prior arrears now, select below to record the full amount in {getMonthDisplay(currentMonth)} without altering historical records:
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingPayment({
+                          ...editingPayment,
+                          amountReceived: editingPayment.amountExpected,
+                          status: 'paid'
+                        });
+                      }}
+                      className="flex-1 py-1.5 px-2 bg-white border border-amber-300 rounded-lg font-bold text-stone-700 hover:bg-amber-100 text-[11px]"
+                    >
+                      Regular Only ({formatCurrency(editingPayment.amountExpected)})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const totalCombined = editingPayment.amountExpected + editingPayment.pastArrears;
+                        setEditingPayment({
+                          ...editingPayment,
+                          amountReceived: totalCombined,
+                          status: 'paid',
+                          remarks: `Maint (${formatCurrency(editingPayment.amountExpected)}) + Arrears (${formatCurrency(editingPayment.pastArrears)})`
+                        });
+                      }}
+                      className="flex-1 py-1.5 px-2 bg-emerald-700 text-white rounded-lg font-bold hover:bg-emerald-800 text-[11px]"
+                    >
+                      Clear All ({formatCurrency(editingPayment.amountExpected + editingPayment.pastArrears)})
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-stone-600 uppercase mb-1">
                   Payment Status
@@ -495,7 +578,7 @@ export function PaymentsTable({
                 </label>
                 <input
                   type="text"
-                  placeholder="Optional remarks (e.g. Transaction ID, note)"
+                  placeholder="Optional remarks (e.g. Transaction ID, past arrears clearance)"
                   value={editingPayment.remarks}
                   onChange={(e) => setEditingPayment({
                     ...editingPayment,

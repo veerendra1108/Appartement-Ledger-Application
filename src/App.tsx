@@ -230,24 +230,28 @@ export function App() {
     }
   };
 
-  // Clear single arrears month
+  // Clear single arrears month by adding collection to current active month without mutating historical past month records
   const handleClearArrearsDue = async (flatId: number, month: string) => {
-    const res = await fetch('/api/payments/toggle-status', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        flat_id: flatId,
-        month: month,
-        status: 'paid',
-        payment_mode: 'UPI'
-      })
-    });
+    try {
+      const res = await fetch('/api/payments/clear-arrears-in-current-month', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flat_id: flatId,
+          due_month: month,
+          target_collection_month: currentMonth,
+          payment_mode: 'UPI'
+        })
+      });
 
-    if (res.ok) {
-      await loadData(currentMonth);
-      showToast(`Arrears cleared for ${month}!`);
-    } else {
-      showToast('Failed to clear arrears', 'error');
+      if (res.ok) {
+        await loadData(currentMonth);
+        showToast(`Arrears for ${month} cleared & recorded in ${currentMonth} collection! Historical records preserved.`);
+      } else {
+        showToast('Failed to clear arrears', 'error');
+      }
+    } catch (err) {
+      showToast('Network error', 'error');
     }
   };
 
@@ -470,6 +474,7 @@ export function App() {
             currentMonth={currentMonth}
             flats={flats}
             payments={payments}
+            pendingReport={pendingReport}
             onToggleStatus={handleToggleStatus}
             onSavePayment={handleSavePayment}
             onAddFlat={() => setShowFlatManager(true)}
@@ -487,6 +492,7 @@ export function App() {
 
         {activeTab === 'arrears' && (
           <ArrearsTracker
+            currentMonth={currentMonth}
             pendingReport={pendingReport}
             flats={flats}
             payments={payments}

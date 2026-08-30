@@ -10,11 +10,14 @@ import {
   Send,
   Download,
   Clock,
-  Sparkles
+  Sparkles,
+  ShieldCheck,
+  Info
 } from 'lucide-react';
 import { Flat, Payment, PendingReportItem, formatCurrency, getMonthDisplay, START_MONTH } from '../types';
 
 interface ArrearsTrackerProps {
+  currentMonth?: string;
   pendingReport: PendingReportItem[];
   flats: Flat[];
   payments: Payment[];
@@ -23,6 +26,7 @@ interface ArrearsTrackerProps {
 }
 
 export function ArrearsTracker({
+  currentMonth = new Date().toISOString().slice(0, 7),
   pendingReport,
   flats,
   payments,
@@ -46,6 +50,19 @@ export function ArrearsTracker({
 
   return (
     <div className="space-y-6">
+      {/* Informative Accounting Rule Banner */}
+      <div className="p-4 bg-emerald-50/80 border border-emerald-200 rounded-2xl flex items-start gap-3 text-xs text-emerald-950">
+        <ShieldCheck size={18} className="text-emerald-700 shrink-0 mt-0.5" />
+        <div className="space-y-0.5">
+          <p className="font-bold text-emerald-900">
+            Historical Data Protection & Current Month Collection
+          </p>
+          <p className="text-emerald-800/90 leading-relaxed">
+            When you clear arrears for past months (e.g. August), the payment is registered as a collection in <span className="font-bold text-emerald-950">{getMonthDisplay(currentMonth)}</span> along with any notes. Historical records in your Excel file for earlier months will <span className="font-bold underline decoration-emerald-600">never be overwritten</span>.
+          </p>
+        </div>
+      </div>
+
       {/* Overview Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-rose-50 border border-rose-200/80 rounded-2xl p-5 shadow-sm">
@@ -76,8 +93,8 @@ export function ArrearsTracker({
 
         <div className="bg-stone-900 text-white rounded-2xl p-5 shadow-sm flex flex-col justify-between">
           <div>
-            <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Timeline Start</span>
-            <p className="text-xl font-bold mt-1">June 2025 (2025-06)</p>
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Active Collection Month</span>
+            <p className="text-xl font-bold mt-1">{getMonthDisplay(currentMonth)}</p>
           </div>
           <div className="pt-2">
             {onExportArrearsPDF && (
@@ -149,6 +166,9 @@ export function ArrearsTracker({
                     <div className="flex flex-wrap gap-2">
                       {monthsList.map((monthKey) => {
                         const isLoading = loadingMonth === `${item.id}-${monthKey}`;
+                        const dueObj = pendingMonths.find(m => (typeof m === 'object' ? m.month : m) === monthKey);
+                        const dueAmount = typeof dueObj === 'object' ? dueObj.amount : (item.maintenance_amount || 2000);
+
                         return (
                           <div
                             key={monthKey}
@@ -156,13 +176,13 @@ export function ArrearsTracker({
                           >
                             <span>{getMonthDisplay(monthKey)}</span>
                             <span className="text-rose-600 font-mono text-[11px]">
-                              (₹{item.maintenance_amount || 2000})
+                              ({formatCurrency(dueAmount)})
                             </span>
                             <button
                               onClick={() => handleQuickClear(item.id, monthKey)}
                               disabled={isLoading}
                               className="ml-1 p-1 hover:bg-emerald-600 hover:text-white rounded text-stone-400 hover:text-white transition-colors"
-                              title={`Mark ${getMonthDisplay(monthKey)} as Paid`}
+                              title={`Collect ₹${dueAmount} in ${getMonthDisplay(currentMonth)} (Leaves historical ${getMonthDisplay(monthKey)} intact)`}
                             >
                               <CheckCircle size={13} className={isLoading ? 'animate-spin' : 'text-emerald-700 hover:text-white'} />
                             </button>
